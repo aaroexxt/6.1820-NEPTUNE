@@ -1,0 +1,24 @@
+{
+    "Header": {
+        "Comment": "All values are metric (mm)",
+        "CreationDate": "2024-11-25T19:59:36Z",
+        "GenerationSoftware": {
+            "Application": "EAGLE",
+            "Vendor": "Autodesk",
+            "Version": "9.6.2"
+        },
+        "Part": "Single"
+    },
+    "Overall": {
+        "BoardThickness": 1.671119,
+        "LayerNumber": 2,
+        "Name": {
+            "ProjectId": "upperArm"
+        },
+        "Owner": "Aaron Becker <ambecker@mit.edu>",
+        "Size": {
+            "X": 97.4598,
+            "Y": 62.0014
+        }
+    }
+}
