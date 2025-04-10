@@ -1,0 +1,201 @@
+%=====================================================
+\chapter{Background}
+%=====================================================
+
+\subsection{Introduction}
+
+In recent years, the integration of smart sensing technologies with mobile devices has opened new possibilities for real-time environmental monitoring, personal health tracking, and human-computer interaction in unconventional domains. Among these domains, underwater environments remain one of the most challenging for wireless communication due to the severe attenuation of radio frequency (RF) signals in water, like WiFi. This project aims to bridge that gap by developing a robust underwater acoustic sensor node capable of communicating with an iPhone application written in Swift. By using acousic frequencies (sound) as the transmission medium, and leveraging the iPhone's microphone as a passive receiver, the system bypasses the limitations of conventional wireless technologies and enables a direct, hardware-to-mobile-device communication link beneath the water surface at low cost and simple hardware complexity.
+
+\subsection{Challenges}
+
+The goal of underwater communication is to reliably transmit digital information through a challenging medium where attenuation, multi-path reflections, and ambient noise levels can often be far more severe than those encountered in terrestrial radio-frequency (RF) systems. Water has acoustic propagation characteristics that are strongly dependent on depth, temperature, and salinity, and it tends to attenuate higher frequencies more quickly than lower frequencies. Although this presents obstacles in achieving both high data rates and long-range communication, there is a clear demand for robust underwater links in applications such as environmental monitoring, subsea robotic control, and military surveillance.
+
+\subsection{System Architecture Overview}
+
+%=====================================================
+\chapter{Introduction}
+%=====================================================
+
+In recent years, the integration of smart sensing technologies with mobile devices has opened new possibilities for real-time environmental monitoring, personal health tracking, and human-computer interaction in unconventional domains. Among these domains, underwater environments remain one of the most challenging for wireless communication due to the severe attenuation of radio frequency (RF) signals in water. This project aims to bridge that gap by developing a robust underwater acoustic sensor node capable of communicating with an iPhone application written in Swift. By using sound as the transmission medium, and leveraging the iPhone’s microphone as a passive receiver, the system bypasses the limitations of conventional wireless technologies and enables a direct, hardware-to-mobile-device communication link beneath the water surface.
+
+The core of the system is a compact underwater node, equipped with sensing capabilities and an acoustic communication interface. The node uses an Aquarian AS-1 hydrophone for both transmitting and receiving sound in water, controlled via a double-pole double-throw (DPDT) relay. A Teensy 4.x microcontroller, coupled with an SGTL5000 audio codec shield, serves as the brain of the system, generating precisely timed waveforms for transmission and capturing incoming acoustic signals with sufficient fidelity for demodulation and decoding. On the transmit side, a PAM8904 piezoelectric driver is used to boost a low-voltage square wave output up to approximately 24 volts peak-to-peak, providing enough acoustic energy to reach a nearby surface device. On the receive side, a MAX4466 operational amplifier conditions incoming analog signals before they are digitized.
+
+The overarching goal is to transmit structured data packets from the underwater sensor node to the iPhone—such as environmental readings or system status—through acoustic signaling. The iPhone app, written in Swift, will use the device’s built-in microphone to listen for underwater signals and decode them in software, enabling real-time visualization, storage, or decision-making. To accomplish this, the communication protocol must be compact, energy-efficient, and robust to underwater acoustic noise and distortion.
+
+A key challenge arises from the constraints imposed by the PAM8904 driver. While it provides high-voltage drive capabilities, it can only generate a single square wave at a fixed frequency at a time. This prohibits the use of traditional frequency-domain multiplexing schemes that rely on the simultaneous superposition of multiple sine waves. Furthermore, square waves inherently introduce significant harmonic content at odd multiples of the fundamental frequency, potentially causing spectral leakage and interference unless carefully filtered. As a result, the design adopts a time-domain frequency shift keying (FSK) approach, where each bit is encoded by sequentially transmitting a tone at one of two distinct frequencies. This strategy maximizes compatibility with the existing hardware while simplifying demodulation on the iPhone side.
+
+To further improve the robustness of the communication, especially given the unpredictability of underwater acoustic channels, error detection and correction mechanisms are introduced. The system supports either cyclic redundancy checks (CRCs) for lightweight error detection or Reed-Solomon codes for stronger error correction in bursty or noisy environments. This ensures that messages received by the iPhone are accurate, even if a few bits are corrupted due to environmental interference.
+
+The final communication packet transmitted by the underwater node consists of a preamble for synchronization, followed by a compact payload, and concluding with an error control code. The entire transmission fits within a narrow acoustic frequency band—chosen to align with the optimal sensitivity of the hydrophone and the iPhone microphone—allowing for minimal energy usage and reliable detection.
+
+This report presents the full system design, from theoretical foundations in signal processing and multiplexing to practical implementation challenges and hardware decisions. The following chapters include a detailed background on relevant communication principles, a breakdown of hardware and filtering requirements, a complete description of the communication protocol, and the rationale for each engineering tradeoff. Future work includes validating filter designs via SPICE simulations and field-testing the system for communication between an underwater node and an iPhone equipped with a Swift-based decoder.
+
+Ultimately, this project demonstrates the feasibility of an accessible, low-cost, and mobile-integrated underwater communication solution, opening new avenues for research, citizen science, and environmental interaction using consumer-grade devices and microcontroller-based sensor nodes.
+
+In this project, an underwater communication system is designed around the Aquarian AS-1 hydrophone, which can operate as both transmitter and receiver, a Teensy microcontroller (with an SGTL5000 audio codec) to generate and process signals, and a high-voltage driver (PAM8904) to produce the necessary amplitude for effective acoustic energy radiation. Initially, frequency-division multiplexing (FDM) was considered to maximize throughput by simultaneously using multiple subcarriers. However, hardware constraints in the PAM8904, which only allows a single square-wave output at a time, led to a more practical decision to employ time-domain frequency shift keying (FSK). 
+
+Despite the compromise on throughput, this approach can still serve as a robust solution for short-range or moderate-range underwater telemetry. Moreover, error control mechanisms such as Reed-Solomon codes or cyclic redundancy checks (CRCs) can provide reliability in an inherently noisy environment. An additional challenge introduced by the PAM8904 is that its square-wave drive generates significant harmonic content, which necessitates a carefully designed low-pass or bandpass filter to reduce unwanted frequencies. This filter must also consider the impedance of the hydrophone to ensure maximum power transfer and minimal signal distortion.
+
+The following chapters delve into each critical aspect of this system. Chapter~2 presents background concepts, including multiplexing strategies, the role of Fourier transforms in communication signal design, and the motivations for error correction. Chapter~3 details the hardware design, including the hydrophone, the DPDT relay, the high-voltage amplifier, and the Teensy-based transmit-and-receive chain, while thoroughly discussing the rationale behind these decisions. Chapter~4 focuses on the signal processing and communication scheme, describing the transition from FDM to time-domain FSK and the exact structure of the transmitted message. Chapter~5 concludes the report and highlights future directions, including plans to run SPICE simulations of the LC filter circuit in order to validate and refine its design parameters.
+
+%=====================================================
+\chapter{Background}
+%=====================================================
+
+\section{Multiplexing Concepts and Their Relevance Underwater}
+
+Multiplexing allows multiple signals to share a communication channel, and it is vital in scenarios where bandwidth or physical channels are limited. In electromagnetic systems, frequency-division multiplexing (FDM) and time-division multiplexing (TDM) are well-known strategies that we were introduced to in 6.1820. Underwater communication, which generally relies on acoustic waves rather than radio waves, can also benefit from these concepts. However, the acoustic channel imposes stricter bandwidth and power limitations, and transducers such as hydrophones often have more limited frequency ranges than typical RF antennas.
+
+An FDM approach would theoretically allow two or more subcarriers to operate at different frequencies, each carrying a separate bitstream. If two subcarriers, for instance, are centered at 10\,kHz and 20\,kHz, then each could shift by \(\pm1\) kHz to transmit binary data, effectively transmitting two bits per symbol interval. This method can increase throughput but demands hardware that can generate multiple simultaneous tones or combine them digitally. The advantage in principle is higher data rate, but it raises the complexity of filtering, amplification, and ensuring that each subcarrier remains distinct over the acoustic path.
+
+A TDM approach allocates different time slots for each user or bitstream. This can simplify hardware since only one frequency or signal path needs to be active at a time. TDM suits systems where low cost, simplicity, and reliability take precedence over maximum throughput. Because underwater environments can already be harsh and unpredictable, many developers of underwater modems rely on time-domain schemes for their robustness and relative ease of design. In this project, time-domain frequency shift keying (FSK) naturally emerged due to the limitations of the PAM8904 amplifier, which cannot drive multiple frequency outputs simultaneously.
+
+\section{Fourier Transforms and Their Importance in Acoustic Systems}
+
+A key principle in communication engineering is that any time-domain signal can be analyzed as a sum of sinusoids in the frequency domain. The Fourier transform provides a mathematical map from time-domain waveforms to their frequency-domain spectra:
+
+\[
+X(f) = \int_{-\infty}^{\infty} x(t)\,e^{-j 2\pi f t} \, dt.
+\]
+
+By examining \( X(f) \), an engineer can understand how energy is distributed across frequencies. In an underwater system, certain frequency ranges propagate more effectively, and understanding the signal's spectrum helps in tailoring it to minimize absorption and reduce interference outside the band of interest. 
+
+This perspective is especially relevant when dealing with a square wave output from a driver. A square wave can be written via the Fourier series expansion as
+
+\[
+x_{\text{sq}}(t) = \frac{4A}{\pi} \sum_{k=0}^{\infty} \frac{\sin((2k+1)\omega_0 t)}{2k+1},
+\]
+
+where \(\omega_0 = 2\pi f_0\) is the fundamental angular frequency, \(f_0\) is the fundamental frequency, and \(A\) is the wave's amplitude. This series shows that a square wave has substantial energy not only at the fundamental frequency \(f_0\) but also at all odd harmonics \(3f_0,\ 5f_0,\ 7f_0,\ldots\). Without careful filtering, these harmonics may radiate into the water, causing interference or simply wasting power.
+
+\section{Time-Domain Frequency Shift Keying versus Frequency-Domain Alternatives}
+
+When implementing FSK, a system assigns one frequency to represent a binary 0 and another frequency to represent a binary 1. In a frequency-domain multiplexed setup, multiple such pairs of frequencies (each pair allocated to a subcarrier) can operate simultaneously. In a time-domain FSK scheme, only one frequency is used at any instant, and the system shifts frequencies in successive time slots to encode different bits. This design choice is often governed by hardware constraints or to avoid inter-carrier interference.
+
+In the present system, the PAM8904's single-frequency nature pushed the design toward time-domain FSK. Instead of continuously generating two subcarriers, the transmitter sends a single square wave at one frequency for a short duration to encode a 0, and then it switches to a second frequency for a short duration to encode a 1. This process repeats throughout the entire message. The fundamental trade-off is that time-domain FSK transmits bits sequentially and therefore cannot match the parallel capacity of FDM. Yet it remains practical and simpler to implement given the driver's limitations.
+
+\section{Error Correction: CRC and Reed-Solomon Codes}
+
+Underwater acoustic channels tend to be susceptible to noise, fading, and bursts of interference. Error correction methods improve reliability by either detecting or correcting bit errors in received messages. A cyclic redundancy check (CRC) is often employed for detection, whereby the transmitter computes a polynomial-based checksum over the message bits and appends it; the receiver then recomputes the checksum and compares. Although CRCs are excellent for error detection, they do not themselves correct errors once discovered.
+
+Reed-Solomon codes provide a stronger line of defense by allowing the receiver to correct a limited number of symbol errors within each codeword. These codes are based on finite-field arithmetic and are particularly robust in dealing with burst errors, which are frequent in multi-path channels or rapidly changing environments. The trade-off is that Reed-Solomon encoding and decoding require more computational overhead and memory, but microcontrollers such as the Teensy can handle this task for moderate message lengths. 
+
+In this system, the plan is to append either a CRC or a Reed-Solomon block at the end of each transmitted message. Reed-Solomon is especially attractive if the hydrophone is used in environments with intense or sporadic interference. This approach helps ensure that even if certain symbol intervals are corrupted by noise, the receiver can still recover the original data.
+
+%=====================================================
+\chapter{System Design}
+%=====================================================
+
+\section{Hardware Configuration and Design Rationale}
+
+The primary hardware elements in this system are the Aquarian AS-1 hydrophone, which can function in both transmit and receive modes; a DPDT relay to switch between these modes; the Teensy microcontroller with its SGTL5000 audio codec for generating and digitizing the signals; and two key amplifier stages: the MAX4466 for receive-side amplification and the PAM8904 for transmit-side high-voltage drive. 
+
+The Aquarian AS-1 is chosen because it reliably operates in the 10--20\,kHz range and is robust enough for moderate underwater depths. Its dual-purpose nature simplifies the system by enabling the same transducer to be used for emission and reception. The DPDT relay handles the routing: in transmit mode, the hydrophone is driven by the PAM8904; in receive mode, the hydrophone's output is passed to the MAX4466, which boosts it before feeding the Teensy audio codec. 
+
+The Teensy, equipped with an SGTL5000, provides a flexible digital-to-analog (DAC) output and analog-to-digital (ADC) input. This capability is crucial for generating the baseband signal (or in some cases, a low intermediate frequency) that the PAM8904 will then amplify, and for digitizing the returning acoustic signals. The MAX4466 is a relatively low-noise operational amplifier intended for electret microphone-type applications, but it can be adapted for hydrophone signals with careful gain setting. 
+
+The PAM8904 driver is particularly important for producing the higher voltage swing needed to effectively drive a piezoelectric element in the hydrophone. Although it excels at boosting a low-voltage square wave to as much as a 24\,V peak-to-peak amplitude, it cannot superimpose multiple sinusoids or generate a linear sinusoidal output by itself. This characteristic directly motivates the time-domain FSK approach. If the design required two simultaneous carriers, a more sophisticated driver architecture with multiple waveform generators and linear amplification stages would be needed.
+
+\section{Square Wave Harmonics and the Need for Filtering}
+
+Because the PAM8904 generates a square wave, the transmitted signal includes significant energy at odd harmonics of the fundamental. Mathematically, if a square wave of amplitude \(A\) has fundamental frequency \(f_0\), its Fourier series is
+
+\[
+x_{\text{sq}}(t) = \frac{4A}{\pi} 
+\left(\sin(\omega_0 t) + \frac{\sin(3\omega_0 t)}{3} + \frac{\sin(5\omega_0 t)}{5} + \cdots \right).
+\]
+
+This means that a portion of the transmitted acoustic energy will appear at \(3f_0,\ 5f_0,\ 7f_0\), and so on. While these harmonics diminish in amplitude with the harmonic order, they can still introduce interference if they fall within sensitive parts of the hydrophone's passband or if they overlap with other acoustic systems. They can also reduce the overall efficiency, because energy is spread over frequencies that might not propagate effectively or might be outside the hydrophone's optimal emission range.
+
+To mitigate this, a low-pass LC filter is placed between the PAM8904 output and the hydrophone. The aim is to pass the fundamental frequency \(f_0\) while attenuating higher-order harmonics. A simple series inductor \(L\) and parallel capacitor \(C\) design can be used, where the cutoff frequency \(f_c\) is chosen according to
+
+\[
+f_c = \frac{1}{2\pi \sqrt{LC}}.
+\]
+
+If the fundamental frequency is around 10\,kHz, one might pick \(f_c\) slightly above 10\,kHz in order to pass 10\,kHz with minimal loss while sufficiently attenuating the 30\,kHz component and beyond. In practice, the hydrophone's own mechanical and electrical characteristics also affect the effective filtering, because the hydrophone may exhibit reactive impedance. Empirical measurements or simulations can confirm whether the filter's insertion loss and stop-band attenuation meet design goals.
+
+\section{Impedance Matching and Extended LC Networks}
+
+For underwater acoustic systems, matching the impedance of the amplifier to that of the transducer can enhance power transfer and reduce reflections. The AS-1 hydrophone generally has a complex impedance that varies with frequency. A basic LC filter might be extended into a more sophisticated network, such as an L-network or a \(\pi\)-network, to both filter out harmonics and simultaneously match the load to the amplifier's output impedance. The general form of an L-network involves a series inductor and a shunt capacitor (or vice versa), sized so that at the chosen operating frequency \(f_0\), the network transforms the load impedance \(Z_L\) to a desired source impedance \(Z_S\). This can be summarized by the equations
+
+\[
+X_L = 2\pi f_0 L, \quad
+X_C = \frac{1}{2\pi f_0 C},
+\]
+
+and the condition for proper matching typically requires \(X_L - X_C = \text{reactive component offset}\) such that the net load seen by the source is purely resistive at \(f_0\). In an underwater context, additional resistive elements may be introduced to ensure a suitable quality factor (Q-factor) that balances between selectivity and minimal insertion loss at the fundamental. 
+
+\section{Planned SPICE Simulations for Validation}
+
+Because theoretical calculations offer only an approximate guide to real-world performance, especially when dealing with hydrophones and their mechanical resonances, it is prudent to validate the LC filter design in a SPICE simulation environment (for instance, LTspice or PSPICE). In such a simulation, the PAM8904's output can be modeled as a square-wave generator with a certain source impedance, and the hydrophone can be approximated as a frequency-dependent load, potentially using a parallel RLC circuit whose parameters are determined from the hydrophone datasheet or measured in a controlled environment.
+
+In the SPICE model, the inductor \(L\) and capacitor \(C\) values for the filter can be swept over a range to see how the filter affects harmonic amplitudes and insertion loss at the fundamental. One can plot the voltage across the load (representing the hydrophone) as a function of frequency, focusing especially on harmonics at \(3f_0\) and \(5f_0\). By iterating on component values, it is possible to find a design that provides significant harmonic attenuation without introducing too much attenuation of the fundamental or unwanted phase shifts that might affect FSK detection timing. After these simulations, a prototype filter can be built, measured, and refined to account for real-world component tolerances.
+
+%=====================================================
+\chapter{Communication Scheme and Signal Processing}
+%=====================================================
+
+\section{Adopting Time-Domain FSK}
+
+The original intention to use frequency-domain multiplexing was based on the desire to place two carriers in parallel, around 10\,kHz and 20\,kHz, each shifted in frequency by \(\pm1\)\,kHz to encode binary 0 or 1. This plan would double the data rate compared to a single-channel approach. However, the PAM8904's limitation to a single square-wave output rendered simultaneous multi-frequency generation infeasible without added hardware complexity. 
+
+In light of that, time-domain frequency shift keying (FSK) is chosen as the simpler path. Here, only one frequency is actively transmitted at a time. For example, a 0 bit can be encoded as a short burst of a square wave at \(f_0\), while a 1 bit is encoded as a short burst at \(f_1\). By assigning distinct intervals in time for each bit, the receiver can sample and detect which frequency is present. This avoids the need for advanced multi-carrier filtering and makes full use of the existing PAM8904 driver.
+
+\section{Message Framing and Error Correction}
+
+A typical message in this time-domain FSK system begins with a preamble, which might be a single bit or a short sequence of bits at a fixed frequency that serves to alert the receiver and establish frequency or amplitude references. Following the preamble, the next eight bits form the main payload. At the end of this payload, a Reed-Solomon block or CRC is appended. The complete transmission might be represented by
+
+\[
+\underbrace{\text{Preamble (1 bit or more)}}_{\text{fixed frequency}} 
+\longrightarrow 
+\underbrace{\text{Data (8 bits, each either } f_0 \text{ or } f_1\text{)}}_{\text{FSK encoding}} 
+\longrightarrow 
+\underbrace{\text{Error Correction (CRC or Reed-Solomon)}}_{\text{redundancy}}.
+\]
+
+The receiver, implemented on the Teensy, uses the SGTL5000 to digitize the incoming waveforms. The software can apply a frequency detection algorithm such as the Goertzel filter, or a short discrete Fourier transform (DFT) around \(f_0\) and \(f_1\). Each bit period is analyzed to see which frequency dominates in that time slice, thus recovering the transmitted bit. After assembling these bits into a packet, a CRC check or Reed-Solomon decode is performed to validate or correct the data. 
+
+\section{Filtering and Demodulation Details}
+
+The same LC filter that is used for transmission can also be beneficial in reverse (though with different component values or a different path) if it helps clean up incoming signals, especially if any unwanted high-frequency noise is present. In practice, the receive chain typically includes a bandpass or low-pass filter stage in the MAX4466 path, or digitally in the Teensy's DSP pipeline, to focus on the approximate region of 10--20\,kHz. After demodulation, the final stage is the error correction or detection process, ensuring that the data is not corrupted. 
+
+Because each bit is sent consecutively, the data rate is ultimately limited by how quickly frequencies can be switched and reliably detected. If the environment is stable and the hardware is capable of rapid switching with short detection windows, then the data throughput can be increased. However, in more difficult conditions or with slow settling times, the symbol length must be increased, reducing the overall bit rate.
+
+%=====================================================
+\chapter{Conclusions and Future Directions}
+%=====================================================
+
+This report presented a thorough exploration of an underwater communication system that was initially conceived to utilize frequency-division multiplexing with two subcarriers at around 10\,kHz and 20\,kHz. The hardware constraint imposed by the PAM8904 piezo driver, which can produce a single square wave at a time, necessitated a shift to time-domain frequency shift keying. While this reduces the theoretical throughput compared to a multi-carrier approach, it simplifies the hardware considerably. 
+
+The square-wave nature of the PAM8904 output leads to substantial harmonic content, which has prompted the inclusion of an LC low-pass or bandpass filter to attenuate unwanted harmonic frequencies. This filter requires careful design and impedance matching considerations to ensure that energy is effectively transferred to the hydrophone at the fundamental frequency while minimizing power dissipation in harmonics. A plan is in place to conduct SPICE simulations using equivalent circuit models for the hydrophone and the PAM8904 output stage to validate the LC filter performance before finalizing and fabricating the prototype. Such simulations will examine how much harmonic attenuation is achieved, as well as whether the filter preserves enough of the fundamental amplitude to ensure reliable acoustic transmission.
+
+On the receive side, the Teensy microcontroller, aided by the SGTL5000 audio codec and the MAX4466 operational amplifier, captures and digitizes the acoustic signals. Time-domain FSK demodulation is performed by detecting whether the received signal is near \(f_0\) or \(f_1\). The inclusion of error control coding in the form of a Reed-Solomon block or a CRC check offers robustness against noise bursts and fading. Although Reed-Solomon decoding is more CPU-intensive, the short packet lengths typical of this system make it feasible on microcontrollers.
+
+Future development could consider upgrading the driver stage to allow true parallel multi-frequency transmissions, potentially using different driver chips or a more linear amplifier architecture. Another area of interest would be refining the filter network to adapt to different operating frequencies or to provide a quasi-bandpass response if multiple frequencies are eventually supported. Advances in low-power computing on the Teensy platform could also allow for more sophisticated modulation schemes or adaptive coding rates that respond to varying underwater channel conditions. 
+
+Overall, the design decisions made here reflect a balance between complexity, cost, and functional requirements, leading to a practical system for moderate data-rate underwater telemetry. The SPICE simulations and real-world in-water testing that follow will be essential to refine this design and confirm its performance in the highly variable environment of underwater acoustics.
+
+\vspace{0.5cm}
+\begin{thebibliography}{99}
+\bibitem{sklar}
+B. Sklar, \emph{Digital Communications: Fundamentals and Applications}, 2nd ed. Prentice Hall, 2001.
+
+\bibitem{proakis}
+J. G. Proakis, \emph{Digital Communications}, 5th ed. McGraw-Hill, 2007.
+
+\bibitem{reedsolomon}
+I. S. Reed and G. Solomon, ``Polynomial Codes Over Certain Finite Fields,'' \emph{Journal of the Society for Industrial and Applied Mathematics}, vol. 8, no. 2, pp. 300--304, 1960.
+
+\bibitem{pam8904}
+Diodes Incorporated, ``PAM8904 - High Voltage Piezo Sounder Driver with Integrated Charge Pump,'' \emph{Datasheet}, 2019.
+
+\bibitem{aquarian}
+Aquarian Audio, ``AS-1 Hydrophone User Guide and Specifications,'' \emph{Technical Documentation}, 2018.
+
+\bibitem{max4466}
+Maxim Integrated, ``MAX4465–MAX4469: Operational Amplifiers for Low-Voltage Audio Applications,'' \emph{Datasheet}, 2015.
+
+\end{thebibliography}
+
+\end{document}

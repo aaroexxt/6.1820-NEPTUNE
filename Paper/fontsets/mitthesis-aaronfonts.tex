@@ -1,0 +1,23 @@
+% Adapted from mitthesis package, by Aaron Becker
+% Documentation: https://ctan.org/pkg/mitthesis
+
+\ProvidesFile{mitthesis-aaronfonts.tex}[2025/03/14 v1.05 Load Computer/Latin Modern text and math fonts]
+
+%% Default fonts
+\ifpdftex
+\ClassNoteNoLine{\ClassName}{Loading Computer Modern text and math fonts (default for pdftex)}
+\RequirePackage[T1]{fontenc}  % Use T1 encoding (necessary for scalable fonts)
+\RequirePackage{lmodern}      % Scalable Latin Modern (closest to Computer Modern)
+\RequirePackage{bm}           % Bold math
+%   \RequirePackage[]{babel} % load babel (with desired options) if using a language other than English
+\else
+\ClassNoteNoLine{\ClassName}{Loading Latin Modern text and math fonts (default for unicode engines)}
+%
+%   \RequirePackage[]{babel} % load babel (with desired options) if using a language other than English
+\defaultfontfeatures{Scale=MatchLowercase} % Ensure fonts scale properly
+\setmainfont{Latin Modern Roman} % Closest to original CM for text
+\setmathfont{Latin Modern Math}  % Closest to original CM for math
+\RequirePackage[warnings-off={mathtools-colon,mathtools-overbracket}]{unicode-math}
+% suppress tiresome warnings about lack of integration between mathtools and unicode-math.
+% Unicode-math loads fontspec package, but default fonts are not selected by fontspec in this case.
+\fi
