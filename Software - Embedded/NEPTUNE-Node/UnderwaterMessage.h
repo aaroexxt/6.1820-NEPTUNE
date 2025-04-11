@@ -11,7 +11,7 @@ MESSAGE PROTOCOL DESCRIPTION
 Total data bits: 16
 Total error correcting bits: 21 (hamming code)
 
-| ID (4 bits) | TYPE (2 bits) | MSG (10 bits) |
+| ID (2 bits) | MSG (8 bits) | 5 bits hamming parity + 1 | (total 16 bits)
 
 ID = 0 to 15, the sensor node you want to target.
 TYPE = Command to send back & forth

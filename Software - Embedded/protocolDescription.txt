@@ -1,0 +1,33 @@
+MESSAGE PROTOCOL DESCRIPTION
+
+Total data bits: 16
+Total error correcting bits: 21 (hamming code)
+
+| ID (2 bits) | MSG (8 bits) | 5 bits hamming parity + 1 | (total 16 bits)
+
+Transmitter sends 2 bit ID, then message type it's requesting:
+
+MSG 0: Alive Check (node sends back all 1s)
+
+MSG 1: Gyro X data (0 = -200 dps, 255 = 200 dps)
+MSG 2: Gyro Y data (0 = -200 dps, 255 = 200 dps)
+MSG 3: Gyro Z data (0 = -200 dps, 255 = 200 dps)
+
+MSG 4: Accel X data (0 = -5 m/s, 255 = 5 m/s)
+MSG 5: Accel Y data (0 = -5 m/s, 255 = 5 m/s)
+MSG 6: Accel Z data (0 = -5 m/s, 255 = 5 m/s)
+
+MSG 7: Mag X data (0 = -500 uT, 255 = 500 uT)
+MSG 8: Mag Y data (0 = -500 uT, 255 = 500 uT)
+MSG 9: Mag Z data (0 = -500 uT, 255 = 500 uT)
+
+MSG 10: Orientation X data (0 = 0 deg, 255 = 360 deg)
+MSG 11: Orientation Y data (0 = 0 deg, 255 = 360 deg)
+MSG 12: Orientation Z data (0 = 0 deg, 255 = 360 deg)
+
+MSG 13: Temperature (0 = 0 *C, 255 = 40 *C)
+
+MSG 14: Toggle LEDs (Response 0 = LEDs off, 1 = LEDs on)
+
+MSG 15: Get battery voltage (0 = 2 V, 255 = 4.2V)
+MSG 16: Get battery percent (0 = 0%, 255 = 100%)

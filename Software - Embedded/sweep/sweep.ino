@@ -27,13 +27,13 @@ void setup() {
   digitalWrite(RELAY_PIN, HIGH);
 }
 
-int f = 7500;
+int f = 8500;
 int d = 1;
 
 void loop() {
   tone(HYDROPHONE_PIN, f);
   f += d;
-  if ((f > 20000 && d == 1) || (f < 7500 && d == -1)) {
+  if ((f > 15000 && d == 1) || (f < 7500 && d == -1)) {
     d *= -1;
   }
   if (f % 3 == 0) delay(1);
