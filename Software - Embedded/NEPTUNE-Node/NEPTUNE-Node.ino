@@ -12,6 +12,7 @@
 
 // Import other device libraries
 #include <Adafruit_LC709203F.h> // Battery monitor
+#include <Adafruit_BNO055.h>
 #include <Adafruit_NeoPixel.h> // LEDs
 
 // Import default pindefs

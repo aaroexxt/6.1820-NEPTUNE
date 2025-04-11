@@ -8,17 +8,12 @@
 /*
 MESSAGE PROTOCOL DESCRIPTION
 
-Total data bits: 16
-Total error correcting bits: 21 (hamming code)
+Total data bits: 10
 
 | ID (2 bits) | MSG (8 bits) | 5 bits hamming parity + 1 | (total 16 bits)
 
-ID = 0 to 15, the sensor node you want to target.
-TYPE = Command to send back & forth
-TYPE 0: LED TOGGLE
-TYPE 1: AVG GYRO DATA (averages all axes)
-TYPE 2: AVG ACCEL DATA (averages all axes)
-TYPE 3: AVG TEMP DATA (averages all axes)
+Transmitter sends 2 bit ID of node it wants, then message type it's requesting (8 bits), then hamming parity bits
+Receiver responds with its own ID, then data (8 bits), then hamming parity bits
 
 */
 

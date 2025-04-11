@@ -3,7 +3,15 @@ MESSAGE PROTOCOL DESCRIPTION
 Total data bits: 16
 Total error correcting bits: 21 (hamming code)
 
-| ID (2 bits) | MSG (8 bits) | 5 bits hamming parity + 1 | (total 16 bits)
+| ID (2 bits) | MSG (8 bits) | 4 bits hamming parity | (total 14 bits)
+
+NOTE the hamming bits are spread throughout the message for redundancy. See below:
+
+Example message:
+Position:    14 13 12 11 10 9 8 7 6 5 4 3 2 1
+Bit value:    1  0  1  0  0 1 ? 0 1 0 ? 1 ? ?
+The ?s represent the Hamming bits
+
 
 Transmitter sends 2 bit ID, then message type it's requesting:
 
