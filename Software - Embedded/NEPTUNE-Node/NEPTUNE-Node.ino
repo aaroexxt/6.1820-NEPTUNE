@@ -74,7 +74,7 @@ AudioConnection          patchCord3(audioInput, 0, inputAmp, 0);
 We use 4 bandpass filters around each frequency of interest
 Each bandpass filter is a biquad filter with multiple cascaded stages to narrow the filter effective passband.
 */
-#define MESSAGE_BIT_DELAY 250 // ms between bits
+#define MESSAGE_BIT_DELAY 500 // ms between bits
 // in theory, we are getting 44100 samples out of bandpass per sec
 #define NUM_SAMPLES (int)((MESSAGE_BIT_DELAY / 1000.0) * sampleRate)
 int16_t samplingBuffer[NUM_SAMPLES]; // BIN indices
@@ -86,16 +86,15 @@ int bitsReceived = 0; // Trackers for bits and bit errors received (for tx/rx st
 int bitsTransmitted = 0;
 int errorsReceived = 0;
 unsigned long lastBitStatisticsTime = 0;
-#define MESSAGE_START_FREQ 20000 // Hz (1/sec)
-#define MESSAGE_0_FREQ 17500 // Hz
-#define MESSAGE_1_FREQ 15000 // Hz
-#define MESSAGE_END_FREQ 22000 // Hz (1/sec)
+#define CENTER_FREQ 8000
+#define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
+#define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
+#define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
+#define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
 
-#define MIN_VALID_AMP 2000
-#define MAX_VALID_AMP 8000
-#define THRESHOLD_SAMPLES_MIN_DETECT 2
+#define THRESHOLD_SAMPLES_MIN_DETECT (int)(NUM_SAMPLES/25)
 #define THRESHOLD_SAMPLES_VALID (int)(NUM_SAMPLES/3)
-#define BANDWIDTH_FREQ 250 // Width of bounds around center frequency for each bandpass filter
+#define BANDWIDTH_FREQ 150 // Width of bounds around center frequency for each bandpass filter
 
 /********************* BANDPASS FILTERS */
 struct BandpassBranch {
@@ -104,11 +103,16 @@ struct BandpassBranch {
   AudioRecordQueue* queue;
   AudioConnection* inputToFilter;
   AudioConnection* filterToQueue;
+  float centerFrequency;
+  float bandwidth;
 };
 
 BandpassBranch* createBandpassBranch(AudioStream& input, float sampleRate, float centerFreq, float bandwidth, int stages = 4) {
   // Allocate a container for all parts of the branch
   BandpassBranch* branch = new BandpassBranch;
+  // Assign the cFreq and bandwidth
+  branch->centerFrequency = centerFreq;
+  branch->bandwidth = bandwidth;
 
   // Allocate audio components
   branch->filter = new AudioFilterBiquad();
@@ -137,6 +141,45 @@ BandpassBranch* branchF_START;
 BandpassBranch* branchF_0;
 BandpassBranch* branchF_1;
 BandpassBranch* branchF_END;
+
+#define MAX_THRESHOLDS 10
+
+struct FreqThreshold {
+  float freq;
+  float amp;
+};
+
+FreqThreshold ampThresholds[MAX_THRESHOLDS] = {
+  // freq, amplitude thresh (from TestBandpassFiltering)
+  {MESSAGE_0_FREQ, 3250}, // 7.5 kHz
+  {MESSAGE_START_FREQ, 3500}, // 8 kHz
+  {MESSAGE_1_FREQ, 3000}, // 8.5 kHz
+  {MESSAGE_END_FREQ, 2500} // 9 kHz
+};
+int numThresholds = 4;
+
+// Returns amplitude threshold for a given frequency (Hz)
+int16_t getAmplitudeThreshold(float freqHz) {
+  if (numThresholds == 0) return 1000;
+
+  // Clamp to bounds
+  if (freqHz <= ampThresholds[0].freq) return ampThresholds[0].amp;
+  if (freqHz >= ampThresholds[numThresholds - 1].freq) return ampThresholds[numThresholds - 1].amp;
+
+  // Find interval
+  for (int i = 0; i < numThresholds - 1; i++) {
+      float f1 = ampThresholds[i].freq;
+      float f2 = ampThresholds[i + 1].freq;
+      if (freqHz >= f1 && freqHz <= f2) {
+          float a1 = ampThresholds[i].amp;
+          float a2 = ampThresholds[i + 1].amp;
+          float t = (freqHz - f1) / (f2 - f1);
+          return (int16_t)(a1 * (1 - t) + a2 * t);
+      }
+  }
+
+  return 1000;
+}
 
 /**************** STATE MACHINE */
 
@@ -225,12 +268,13 @@ void setup() {
     // Battery check setup
     if (!maxlipo.begin()) {
       Serial.println("[Error] Battery monitor");
-      initializationError(4);
+      //initializationError(4);
+    } else {
+      Serial.print(F("[OK] Battery monitor MAX17048 initialized"));
+      Serial.print(F(" with Chip ID: 0x")); 
+      Serial.println(maxlipo.getChipID(), HEX);
+      maxlipo.setAlertVoltages(2.0, 4.2);
     }
-    Serial.print(F("[OK] Battery monitor MAX17048 initialized"));
-    Serial.print(F(" with Chip ID: 0x")); 
-    Serial.println(maxlipo.getChipID(), HEX);
-    maxlipo.setAlertVoltages(2.0, 4.2);
     initializationPass(step);
     step++;
 
@@ -263,7 +307,7 @@ void setup() {
     audioShield.micGain(90);
     audioShield.volume(1);
     inputAmp.gain(2);        // amplify mic to useful range
-    setAudioSampleI2SFreq(sampleRate); // Set I2S sampling frequency
+    //setAudioSampleI2SFreq(sampleRate); // Set I2S sampling frequency
     Serial.printf("[OK] SGTL running at samplerate: %d\n", sampleRate);
     initializationPass(step);
     step++;
@@ -282,9 +326,11 @@ void setup() {
     delay(50);
 }
 
+unsigned long lastLoopTime = 0;
+
 void loop() {
   /*********** LEDS */
-  if (millis() > lastLEDUpdateTime) {
+  if (millis() > lastLEDUpdateTime && false) {
     uint32_t color = strip.Color(counter, 0, 0, 30); // r g b w
     if (dir) {
       counter++;
@@ -298,7 +344,7 @@ void loop() {
   }
 
   /****************** BATTERY MONITOR */
-  if (millis() - lastBattCheckTime >= 1000) { // Check every 1 second
+  if (millis() - lastBattCheckTime >= 1000 && false) { // Check every 1 second
     lastBattCheckTime = millis();
 
     float cellVoltage = maxlipo.cellVoltage(); // Get cell voltage
@@ -351,8 +397,55 @@ void loop() {
     }
   }
 
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+    if (input.startsWith("a ")) {
+      float freq = 0, amp = 0;
+      int space1 = input.indexOf(' ');
+      int space2 = input.indexOf(' ', space1 + 1);
+      if (space2 > 0) {
+          freq = input.substring(space1 + 1, space2).toFloat();
+          amp = input.substring(space2 + 1).toFloat();
+
+          // Check if freq already exists, update if so
+          bool updated = false;
+          for (int i = 0; i < numThresholds; i++) {
+              if (abs(ampThresholds[i].freq - freq) < 1.0) {
+                  ampThresholds[i].amp = amp;
+                  updated = true;
+                  break;
+              }
+          }
+
+          // If not found, insert it
+          if (!updated && numThresholds < MAX_THRESHOLDS) {
+              ampThresholds[numThresholds++] = {freq, amp};
+          }
+
+          // Sort by frequency
+          for (int i = 0; i < numThresholds - 1; i++) {
+              for (int j = i + 1; j < numThresholds; j++) {
+                  if (ampThresholds[i].freq > ampThresholds[j].freq) {
+                      FreqThreshold temp = ampThresholds[i];
+                      ampThresholds[i] = ampThresholds[j];
+                      ampThresholds[j] = temp;
+                  }
+              }
+          }
+
+          Serial.print("Updated threshold for ");
+          Serial.print(freq);
+          Serial.print(" Hz → ");
+          Serial.println(amp);
+      } else {
+          Serial.println("Invalid format. Use: a <freq> <amp>");
+      }
+    }
+  }
+
   /************ IMU SENSOR */
-  if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS) {
+  if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS && false) {
     bno.getEvent(&bno_orientationData, Adafruit_BNO055::VECTOR_EULER);
     bno.getEvent(&bno_angVelocityData, Adafruit_BNO055::VECTOR_GYROSCOPE);
     bno.getEvent(&bno_magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
@@ -365,6 +458,8 @@ void loop() {
   if (millis() - lastBitStatisticsTime >= 1000) {
     Serial.printf("[BIT STATISTICS] Tx: %d, Rx: %d, ErrRx: %d, %%ErrRx:%.3f\n", bitsTransmitted, bitsReceived, errorsReceived, (float)errorsReceived/(float)bitsReceived);
     lastBitStatisticsTime = millis();
+
+    if (curReceivingState == LISTENING) clearSampleBuffer(); // TODO note this line
   }
   
   /**************** TONE SENDING */
@@ -400,10 +495,18 @@ void loop() {
   /**************** TONE RECEIVING */
   // Input samples into samplebuffer. CountTonePresentSamples will free queue memory as necessary
   // 2nd argument is threshold, input values are -32768 to 32767 so this is sort of arbitrary
-  int startSamples = countTonePresentSamples(branchF_START->queue);
-  int F0Samples = countTonePresentSamples(branchF_0->queue);
-  int F1Samples = countTonePresentSamples(branchF_1->queue);
-  int endSamples = countTonePresentSamples(branchF_END->queue);
+  int startSamples = countTonePresentSamples(branchF_START->queue, branchF_START->centerFrequency);
+  int F0Samples = countTonePresentSamples(branchF_0->queue, branchF_0->centerFrequency);
+  int F1Samples = countTonePresentSamples(branchF_1->queue, branchF_1->centerFrequency);
+  int endSamples = countTonePresentSamples(branchF_END->queue, branchF_END->centerFrequency);
+  
+  if (startSamples > 100) {Serial.print("S"); Serial.println(startSamples);}
+  if (F0Samples > 100) {Serial.print("0"); Serial.println(F0Samples);}
+  if (F1Samples > 100) {Serial.print("1"); Serial.println(F1Samples);}
+  if (endSamples > 100) {Serial.print("E"); Serial.println(endSamples);}
+
+  while(millis() - lastLoopTime < 10) {}
+  lastLoopTime = millis();
 
   // Then add samples to sampling buffer
   if (sampling) {
@@ -412,7 +515,7 @@ void loop() {
     addSamplesToBuffer(MESSAGE_1_FREQ, F1Samples);
     addSamplesToBuffer(MESSAGE_END_FREQ, endSamples);
   }
-
+  
   if (curReceivingState == LISTENING) {
 
     // Does the sampling buffer currently contain at least THRESHOLD_SAMPLES_MIN_DETECT examples of start frequency?
@@ -425,7 +528,7 @@ void loop() {
 
   } else if (curReceivingState == CHECK_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten all start samples OR have we started to transition into the bit (ie our timing was misaligned)?
 
-    if (doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_VALID)) {
+    if (doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_MIN_DETECT)) {
       transitionReceivingState(MESSAGE_GET_BIT); //Currently receiving valid message
     } else { // If buffer is not valid OR freq doesn’t match start
       transitionReceivingState(LISTENING);
@@ -435,7 +538,7 @@ void loop() {
 
     transitionReceivingState(MESSAGE_GET_BIT);
 
-  } else if (curReceivingState == MESSAGE_GET_BIT && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, 2))) { // Gotten our 1/0 samples OR have we started to transition back to start state (ie timing misaligned again)
+  } else if (curReceivingState == MESSAGE_GET_BIT && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten our 1/0 samples OR have we started to transition back to start state (ie timing misaligned again)
     
     if (doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_VALID)) {
       bitBuffer[bitPointer] = 1; // WE GOT A 1
@@ -555,8 +658,10 @@ void loop() {
 
 // Transition state function
 void transitionReceivingState(RECEIVING_STATE newState) {
-  Serial.print("transitionReceivingState: ");
-  Serial.println(newState);
+  if (newState >= 2) {
+    Serial.print("transitionReceivingState: ");
+    Serial.println(newState);
+  }
   if (newState == CHECK_START || newState == INTERMEDIATE_START || newState == MESSAGE_GET_BIT) {
     clearSampleBuffer();
     sampling = 1; // Begin sampling
@@ -571,7 +676,7 @@ void transitionReceivingState(RECEIVING_STATE newState) {
   curReceivingState = newState; // Set our current state to the new one
 }
 
-int countTonePresentSamples(AudioRecordQueue* queue) {
+int countTonePresentSamples(AudioRecordQueue* queue, float centerFrequency) {
   int matches = 0;
   while (queue->available() > 0) {
     int16_t* data = queue->readBuffer();
@@ -580,7 +685,7 @@ int countTonePresentSamples(AudioRecordQueue* queue) {
 
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
       int16_t sample = abs(data[i]);
-      if (sample >= MIN_VALID_AMP && sample <= MAX_VALID_AMP) matches++;
+      if (sample >= getAmplitudeThreshold(centerFrequency)) matches++;
     }
 
     queue->freeBuffer();  // <- No argument needed, frees the last buffer
@@ -591,6 +696,7 @@ int countTonePresentSamples(AudioRecordQueue* queue) {
 
 
 void addSamplesToBuffer(int sampleFreq, int count) {
+  //Serial.print(sampleFreq); Serial.print("Hz @ c="); Serial.println(count);
   for (int i=0; i<count; i++) {
     samplingBuffer[samplingPointer] = sampleFreq; // Commit sample (bin number) to memory
       samplingPointer++;
@@ -624,6 +730,7 @@ void initializationError(int error) {
     strip.show();
     delay(2000);
     strip.clear();
+    while(1){}
 }
 
 void transitionOperatingMode(OPERATING_MODE newMode) {

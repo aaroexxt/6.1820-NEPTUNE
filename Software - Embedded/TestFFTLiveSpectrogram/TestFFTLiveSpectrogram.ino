@@ -40,6 +40,8 @@ SamplingBuffer is a time-valued array that records bin number
 #define FFT_BIN_WIDTH 43.0664
 #define MIN_VALID_AMP 0.05
 #define MAX_VALID_AMP 1.5
+#define MESSAGE_LOWPASS_CUTOFF_FREQ 4500
+#define FFT_BIN_CUTOFF (int)(MESSAGE_LOWPASS_CUTOFF_FREQ/FFT_BIN_WIDTH) //Lowpass 
 
 void setup() {
     Serial.begin(115200);
@@ -54,7 +56,7 @@ void setup() {
 
     // Get audio shield up and running
     AudioMemory(500);
-    inputAmp.gain(2);        // amplify mic to useful range
+    inputAmp.gain(3);        // amplify mic to useful range
     audioShield.enable();
     audioShield.inputSelect(myInput);
     audioShield.micGain(90);
@@ -67,7 +69,8 @@ void setup() {
 }
 
 void loop() {
-    static bool printResults = false;
+    static bool printResults = true;
+
 
     // Check for user input to start
     if (Serial.available()) {
@@ -82,7 +85,7 @@ void loop() {
         int binNumber = 0;
         for (int i = 0; i < 1024; i++) {
             float n = inputFFT.read(i);
-            if (n > maxBinAmp) {
+            if (n > maxBinAmp && i >= FFT_BIN_CUTOFF) {
                 maxBinAmp = n;
                 binNumber = i;
             }
@@ -90,12 +93,15 @@ void loop() {
 
         // if (maxBinAmp >= MIN_VALID_AMP && maxBinAmp <= MAX_VALID_AMP) {
             float peakFreq = binNumber * FFT_BIN_WIDTH;
-            float scaledFreq = peakFreq / 100000.0; // Scale frequency to 0-1 range, 100kHz -> 1. So 20kHz = 0.2
+            float scaledFreq = peakFreq / 20000.0; // Scale frequency to 0-1 range, 100kHz -> 1. So 20kHz = 0.2
 
             // Print for Serial Plotter: tab-separated
-            Serial.print(maxBinAmp);
-            Serial.print("\t");
-            Serial.println(scaledFreq);
+            // Serial.print(maxBinAmp*5);
+            // Serial.print("\t");
+            // Serial.println(scaledFreq);
+            
+            // human-readable output
+            Serial.print(maxBinAmp); Serial.print(" @ "); Serial.print(peakFreq); Serial.println("Hz");
         // }
     }
 }

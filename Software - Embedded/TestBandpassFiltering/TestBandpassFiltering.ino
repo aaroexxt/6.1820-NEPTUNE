@@ -11,13 +11,52 @@
 #include "pindefs.h"
 
 /************ Frequencies + Sample Settings */
-#define MESSAGE_START_FREQ 20000
-#define MESSAGE_0_FREQ     17500
-#define MESSAGE_1_FREQ     15000
-#define MESSAGE_END_FREQ   22000
-#define BANDWIDTH_FREQ     250 // Hz
-#define MIN_VALID_AMP      2000
-#define MAX_VALID_AMP      8000
+#define CENTER_FREQ 8000
+#define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
+#define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
+#define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
+#define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
+#define BANDWIDTH_FREQ     150 // Hz
+
+#define MAX_THRESHOLDS 10
+
+struct FreqThreshold {
+    float freq;
+    float amp;
+};
+
+FreqThreshold ampThresholds[MAX_THRESHOLDS] = {
+    {9000, 941.89},
+    {10000, 889.67},
+    {11000, 732.31},
+    {11000, 747.95}
+};
+int numThresholds = 4;
+
+
+// Returns amplitude threshold for a given frequency (Hz)
+float getAmplitudeThreshold(float freqHz) {
+  if (numThresholds == 0) return 1000;
+
+  // Clamp to bounds
+  if (freqHz <= ampThresholds[0].freq) return ampThresholds[0].amp;
+  if (freqHz >= ampThresholds[numThresholds - 1].freq) return ampThresholds[numThresholds - 1].amp;
+
+  // Find interval
+  for (int i = 0; i < numThresholds - 1; i++) {
+      float f1 = ampThresholds[i].freq;
+      float f2 = ampThresholds[i + 1].freq;
+      if (freqHz >= f1 && freqHz <= f2) {
+          float a1 = ampThresholds[i].amp;
+          float a2 = ampThresholds[i + 1].amp;
+          float t = (freqHz - f1) / (f2 - f1);
+          return a1 * (1 - t) + a2 * t;
+      }
+  }
+
+  return 1000;
+}
+
 
 /************ Audio Setup */
 const int micInput = AUDIO_INPUT_MIC;
@@ -69,19 +108,25 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
 }
 
 // helper fn to get average amplitude of queue for each biquad filter queue
-double getQueueAverageAmplitude(AudioRecordQueue* queue) {
-    float averageAmplitude = 0;
-    int samples = 0;
-    while (queue->available() > 0) {
-    int16_t* data = queue->readBuffer();
-    if (!data) continue;
-    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-        averageAmplitude += (double)abs(data[i]); // Normalize
-        samples++;
-    }
-    queue->freeBuffer();
+double getQueueAverageAmplitude(AudioRecordQueue* queue, unsigned long* sampleCounter) {
+  double averageAmplitude = 0;
+  int samples = 0;
+  while (queue->available() > 0) {
+      int16_t* data = queue->readBuffer();
+      if (!data) continue;
+      for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+          averageAmplitude += (double)abs(data[i]);
+          samples++;
+      }
+      queue->freeBuffer();
   }
-  return averageAmplitude/(double)samples;
+
+  // Increment the corresponding counter (if provided)
+  if (sampleCounter != nullptr) {
+      *sampleCounter += samples;
+  }
+
+  return (samples > 0) ? averageAmplitude / (double)samples : 0.0;
 }
 
 void setup() {
@@ -91,10 +136,11 @@ void setup() {
   AudioMemory(500);
 
   // Initialize SGTL5000
+  audioShield.enable();
   audioShield.inputSelect(micInput);
   audioShield.micGain(90); // max mic (analog) gain
   audioShield.volume(1);
-  inputAmp.gain(2); // amplify mic to useful range
+  inputAmp.gain(3); // amplify mic to useful range
   
   // Create branches for each frequency (autostarts queue)
   branchF_START = createBandpassBranch(inputAmp, sampleRate, MESSAGE_START_FREQ, BANDWIDTH_FREQ);
@@ -106,21 +152,175 @@ void setup() {
   Serial.println("StartFreq\tFreq0\tFreq1\tEndFreq");
 }
 
-void loop() {
-  // Read average sample amplitudes in each filter
-  double startAmp = getQueueAverageAmplitude(branchF_START->queue);
-  double f0Amp    = getQueueAverageAmplitude(branchF_0->queue);
-  double f1Amp    = getQueueAverageAmplitude(branchF_1->queue);
-  double endAmp   = getQueueAverageAmplitude(branchF_END->queue);
+bool outputThresholds = false;
 
-  // Plot results
-  Serial.print(startAmp);
-  Serial.print("\t");
-  Serial.print(f0Amp);
-  Serial.print("\t");
-  Serial.print(f1Amp);
-  Serial.print("\t");
-  Serial.println(endAmp);
+bool zoomMode = false;
+unsigned long lastReportTime = 0;
+
+unsigned long counter_START = 0;
+unsigned long counter_0 = 0;
+unsigned long counter_1 = 0;
+unsigned long counter_END = 0;
+
+
+
+void loop() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    if (input.equalsIgnoreCase("r")) {
+      outputThresholds = !outputThresholds;
+      Serial.print("Output mode: ");
+      Serial.println(outputThresholds ? "Thresholds" : "Raw FFT data");
+    } else if (input.equalsIgnoreCase("z")) {
+      zoomMode = !zoomMode;
+      if (zoomMode) {
+        Serial.println("Zoom mode: ON (fast processing, 1Hz report)");
+        counter_START = counter_0 = counter_1 = counter_END = 0;
+        lastReportTime = millis();
+      } else {
+        Serial.println("Zoom mode: OFF (normal output resumed)");
+      }
+    } else if (input.equalsIgnoreCase("d")) {
+      Serial.println("Sampling bandpass filter amplitudes for 10 seconds...");
+
+      const unsigned long sampleDurationMs = 10000;
+      const unsigned long startTime = millis();
+
+      double totalStart = 0, total0 = 0, total1 = 0, totalEnd = 0;
+      unsigned long samples = 0;
+
+      while (millis() - startTime < sampleDurationMs) {
+        totalStart += getQueueAverageAmplitude(branchF_START->queue, nullptr);
+        total0     += getQueueAverageAmplitude(branchF_0->queue,    nullptr);
+        total1     += getQueueAverageAmplitude(branchF_1->queue,    nullptr);
+        totalEnd   += getQueueAverageAmplitude(branchF_END->queue,  nullptr);
+
+        samples++;
+
+        delay(10);
+      }
+
+      // Compute average amplitudes
+      double avgStart = (samples > 0) ? totalStart / (double)samples : 0;
+      double avg0     = (samples > 0)     ? total0     / (double)samples     : 0;
+      double avg1     = (samples > 0)     ? total1     / (double)samples     : 0;
+      double avgEnd   = (samples > 0)   ? totalEnd   / (double)samples   : 0;
+
+      // Set thresholds
+      numThresholds = 4;
+      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 1.2};
+      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 1.2};
+      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 1.2};
+      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 1.2};
+
+      // Sort thresholds
+      for (int i = 0; i < numThresholds - 1; i++) {
+        for (int j = i + 1; j < numThresholds; j++) {
+          if (ampThresholds[i].freq > ampThresholds[j].freq) {
+            FreqThreshold temp = ampThresholds[i];
+            ampThresholds[i] = ampThresholds[j];
+            ampThresholds[j] = temp;
+          }
+        }
+      }
+
+      Serial.println("New thresholds set:");
+      for (int i = 0; i < numThresholds; i++) {
+        Serial.print(ampThresholds[i].freq);
+        Serial.print(" Hz → ");
+        Serial.println(ampThresholds[i].amp);
+      }
+      delay(5000);
+} else if (input.startsWith("a ")) {
+        float freq = 0, amp = 0;
+        int space1 = input.indexOf(' ');
+        int space2 = input.indexOf(' ', space1 + 1);
+        if (space2 > 0) {
+            freq = input.substring(space1 + 1, space2).toFloat();
+            amp = input.substring(space2 + 1).toFloat();
+
+            // Check if freq already exists, update if so
+            bool updated = false;
+            for (int i = 0; i < numThresholds; i++) {
+                if (abs(ampThresholds[i].freq - freq) < 1.0) {
+                    ampThresholds[i].amp = amp;
+                    updated = true;
+                    break;
+                }
+            }
+
+            // If not found, insert it
+            if (!updated && numThresholds < MAX_THRESHOLDS) {
+                ampThresholds[numThresholds++] = {freq, amp};
+            }
+
+            // Sort by frequency
+            for (int i = 0; i < numThresholds - 1; i++) {
+                for (int j = i + 1; j < numThresholds; j++) {
+                    if (ampThresholds[i].freq > ampThresholds[j].freq) {
+                        FreqThreshold temp = ampThresholds[i];
+                        ampThresholds[i] = ampThresholds[j];
+                        ampThresholds[j] = temp;
+                    }
+                }
+            }
+
+            Serial.print("Updated threshold for ");
+            Serial.print(freq);
+            Serial.print(" Hz → ");
+            Serial.println(amp);
+        } else {
+            Serial.println("Invalid format. Use: a <freq> <amp>");
+        }
+    }
+  }
+
+  // Read average sample amplitudes in each filter
+  double startAmp = getQueueAverageAmplitude(branchF_START->queue, zoomMode ? &counter_START : nullptr);
+  double f0Amp    = getQueueAverageAmplitude(branchF_0->queue,    zoomMode ? &counter_0    : nullptr);
+  double f1Amp    = getQueueAverageAmplitude(branchF_1->queue,    zoomMode ? &counter_1    : nullptr);
+  double endAmp   = getQueueAverageAmplitude(branchF_END->queue,  zoomMode ? &counter_END  : nullptr);
+  if (!zoomMode) delay(10);
+
+  if (zoomMode) {
+    if (millis() - lastReportTime >= 1000) {
+        Serial.print("Filter sample rates (Hz):\t");
+        Serial.print("Start=");
+        Serial.print(counter_START);
+        Serial.print("\t0=");
+        Serial.print(counter_0);
+        Serial.print("\t1=");
+        Serial.print(counter_1);
+        Serial.print("\tEnd=");
+        Serial.println(counter_END);
+
+        counter_START = counter_0 = counter_1 = counter_END = 0;
+        lastReportTime = millis();
+    }
+  } else {
+
+
+    // Plot results
+    if (outputThresholds) {
+      Serial.print(startAmp >= getAmplitudeThreshold(MESSAGE_START_FREQ));
+      Serial.print("\t");
+      Serial.print(f0Amp >= getAmplitudeThreshold(MESSAGE_0_FREQ));
+      Serial.print("\t");
+      Serial.print(f1Amp >= getAmplitudeThreshold(MESSAGE_1_FREQ));
+      Serial.print("\t");
+      Serial.println(endAmp >= getAmplitudeThreshold(MESSAGE_END_FREQ));
+    } else {
+      Serial.print(startAmp);
+      Serial.print("\t");
+      Serial.print(f0Amp);
+      Serial.print("\t");
+      Serial.print(f1Amp);
+      Serial.print("\t");
+      Serial.println(endAmp);
+    }
+  }
 
   delay(50); // Smooth plot
 }

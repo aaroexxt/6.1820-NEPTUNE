@@ -77,6 +77,10 @@ void loop() {
         char c = Serial.read();
         if (c == 's' || c == 'S') {
             sweepRequested = true;
+            digitalWrite(RELAY_PIN, HIGH);
+            delay(250);
+            digitalWrite(RELAY_PIN, LOW);
+            delay(250);
             sweepStartTime = millis();
             fftCount = 0;
             memset(fftAccumulator, 0, sizeof(fftAccumulator));
@@ -99,32 +103,32 @@ void loop() {
             }
             if (maxVal < 0.0001) maxVal = 0.0001;
 
-            const int binWidthSamples = round(FFT_BIN_WIDTH);
+            // Output 50 averaged FFT bins (0 to Nyquist, equally spaced)
+            const int fftSize = 1024;
+            float nyquist = sampleRate / 2.0;
+            float binWidthHz = nyquist / fftSize;  // actual bin width in Hz
+            float freqBandWidth = nyquist / 50.0;  // each output point covers this much Hz
 
-            for (int i = 0; i < 1022; i++) { // up to 1022 so we can look ahead to i+1
-                float val1 = fftAccumulator[i] / maxVal;
-                float val2 = fftAccumulator[i + 1] / maxVal;
+            for (int i = 0; i < 50; i++) {
+                float bandStartHz = i * freqBandWidth;
+                float bandEndHz = (i + 1) * freqBandWidth;
 
-                if (interpolate) {
-                    for (int j = 0; j < binWidthSamples; j++) {
-                        float t = (float)j / (float)(binWidthSamples - 1); // 0 to 1
-                        float interp = val1 * (1.0 - t) + val2 * t;
-                        Serial.println(interp);
-                    }
-                } else {
-                    for (int j = 0; j < binWidthSamples; j++) {
-                        Serial.println(val1);
-                    }
+                int startBin = round(bandStartHz / binWidthHz);
+                int endBin = round(bandEndHz / binWidthHz);
+
+                float sum = 0;
+                int count = 0;
+
+                for (int bin = startBin; bin < endBin && bin < fftSize; bin++) {
+                    sum += fftAccumulator[bin];
+                    count++;
                 }
+
+                float avg = (count > 0) ? (sum / count) / maxVal : 0;
+                Serial.println(avg);
+                delay(2);
             }
 
-            // Handle last bin (no next bin to interpolate to)
-            float lastVal = fftAccumulator[1023] / maxVal;
-            for (int j = 0; j < binWidthSamples; j++) {
-                Serial.println(lastVal);
-            }
-
-            Serial.println();
         }
     }
 }
