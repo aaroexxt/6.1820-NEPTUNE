@@ -15,7 +15,7 @@ The ?s represent the Hamming parity bits (last bit is overall parity)
 
 Transmitter sends 2 bit ID, then message type it's requesting:
 
-MSG 0: Alive Check (node sends back all 1s)
+MSG 0 or unknown ID: Alive Check (node sends back alternating 0s and 1s)
 
 MSG 1: Gyro X data (0 = -200 dps, 255 = 200 dps)
 MSG 2: Gyro Y data (0 = -200 dps, 255 = 200 dps)

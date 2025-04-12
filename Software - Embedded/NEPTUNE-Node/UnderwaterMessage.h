@@ -26,7 +26,7 @@ public:
     // Bit fields for the payload:
     uint16_t id : 2;   // Device ID [0-3]
     uint16_t msg : 8;  // Message value [0-255]
-    uint16_t size: HAMMING_BITS; // total size
+    static const uint16_t size = HAMMING_BITS; // total size
 
     // Constructors
     UnderwaterMessage() : id(0), msg(0) {}

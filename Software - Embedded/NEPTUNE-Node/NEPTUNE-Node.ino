@@ -1,14 +1,8 @@
 // Import default libraries
 #include <Arduino.h>
-#include <elapsedMillis.h>
-#include <cmath>
-#include <iostream>
 
 //Import audio-related libraries
 #include <Audio.h>
-#include <SPI.h>
-#include <Wire.h>
-
 // Import other device libraries
 #include "Adafruit_MAX1704X.h" // Battery monitor
 #include <Adafruit_BNO055.h> // Accel, Gyro, Mag, Temp
@@ -21,13 +15,29 @@
 /******* ADDITIONAL DEVICE SETUP */
 
 // Declare NeoPixel strip object:
-Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_RGBW + NEO_KHZ800);
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 // GRB color order
-uint32_t red = strip.Color(0, 64, 0, 0);
-uint32_t greenishwhite = strip.Color(64, 0, 0, 64); // g r b w
-uint32_t bluishwhite = strip.Color(0, 0, 64, 64);
+uint32_t red = strip.Color(255, 0, 0, 0);
+uint32_t greenishwhite = strip.Color(0, 255, 0); // g r b w
+uint32_t bluishwhite = strip.Color(0, 0, 255, 0);
+uint32_t cyan = strip.Color(0, 255, 255, 0);
+uint32_t purple = strip.Color(255, 0, 255, 0);
 
-Adafruit_LC709203F lc;
+// LED blinky anim stuff
+int counter = 0;
+bool dir = 1;
+unsigned long lastLEDUpdateTime = 0;
+
+Adafruit_MAX17048 maxlipo; // Battery monitor
+// Battery monitor stuff
+float lastCellVoltage = 0.0;
+float lastPercentage = 100.0; // Initialize with a full battery percentage
+unsigned long lastBattCheckTime = 0;
+unsigned long lastPlayedBatteryTime = 0;
+int pctBufPointer = -1;
+#define BATTERY_SAMPLES 5
+float pctBuf[BATTERY_SAMPLES];
+
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
 sensors_event_t bno_orientationData, bno_angVelocityData, bno_magnetometerData, bno_accelerometerData;
 int8_t bno_tempData;
@@ -72,8 +82,10 @@ unsigned long lastBitStatisticsTime = 0;
 #define MESSAGE_1_FREQ 15000 // Hz
 #define MESSAGE_END_FREQ 22000 // Hz (1/sec)
 
-#define MIN_VALID_AMP 0.1
-#define MAX_VALID_AMP 1.5
+#define MIN_VALID_AMP 2000
+#define MAX_VALID_AMP 8000
+#define THRESHOLD_SAMPLES_MIN_DETECT 2
+#define THRESHOLD_SAMPLES_VALID (int)(NUM_SAMPLES/3)
 #define BANDWIDTH_FREQ 500 // Width of bounds around center frequency for each bandpass filter
 
 /********************* BANDPASS FILTERS */
@@ -89,7 +101,7 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
                                      float sampleRate,
                                      float centerFreq,
                                      float bandwidth,
-                                     int stages = 3) {
+                                     int stages = 4) {
   // Allocate a container for all parts of the branch
   BandpassBranch* branch = new BandpassBranch;
 
@@ -100,11 +112,9 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
   // Compute quality factor for each stage
   float Q_total = centerFreq / bandwidth;
   float Q_stage = Q_total / sqrt((float)stages);
-  float coeffs[5];
 
   for (int i = 0; i < stages; i++) {
-    AudioFilterBiquad::makeBandpass(coeffs, sampleRate, centerFreq, Q_stage);
-    branch->filter->setCoefficients(i, coeffs);
+    branch->filter->setBandpass(i, centerFreq, Q_stage);
   }
 
   // Hook up audio connections
@@ -141,7 +151,7 @@ unsigned long lastToneStart = 0;
 byte toneStackPos = 0;
 unsigned long lastBitChange = 0;
 
-
+/*************** OPERATING STATE MACHINE */
 typedef enum {
   RECEIVE,
   TRANSMIT,
@@ -149,6 +159,19 @@ typedef enum {
 } OPERATING_MODE;
 
 OPERATING_MODE mode = RECEIVE;
+
+/****************** FUNCTION PROTOTYPES */
+// Forward declarations to help Arduino compiler
+
+void transitionReceivingState(RECEIVING_STATE newState);
+void transitionOperatingMode(OPERATING_MODE newMode);
+int countTonePresentSamples(AudioRecordQueue* queue);
+void clearSampleBuffer();
+void clearBitBuffer();
+bool isSampleBufferValid();
+void transmitMessageAsync(UnderwaterMessage message);
+void addToneQueue(int freq, unsigned long delay);
+
 
 void setup() {
     Serial.begin(115200);
@@ -164,59 +187,58 @@ void setup() {
         - Blink green to show initialization good!
         - If anything fails: display full red on LED strip
     */
+    int step = 1; // Initialization step
 
     // Setup pin modes
     pinMode(LED_PIN, OUTPUT);
     pinMode(HYDROPHONE_PIN, OUTPUT);
     pinMode(RELAY_PIN, OUTPUT);
+
+    // Initial pin setup
+    digitalWrite(RELAY_PIN, LOW);
    
     // Get LEDs up and running
     strip.begin();
     strip.show(); // Initialize all pixels to 'off'
-    strip.setBrightness(64);
+    strip.setBrightness(LED_BRIGHTNESS);
 
     // LEDs: show that we are alive
-    strip.fill(bluishwhite, 0, 12); // light up entire strip
+    strip.fill(purple, 0, 20); // light up entire strip
     strip.show();
     // keep strip on, then continue with rest of installation
     delay(500); 
     strip.clear();
 
-    Serial.printf("NEPTUNE-NODE Initializing. Node-ID=%d\n", NODE_ID);
+    Serial.printf("[OK] NEPTUNE-NODE Initializing. Node-ID=%d\n", NODE_ID);
 
-    initializationPass(2);
+    initializationPass(step);
+    step++;
     
-    // Get battery monitor (LC709203F) up and running
-    Wire.setClock(100000);
     // Battery check setup
-    if (!lc.begin()) {
-      Serial.println(F("Error initializing LC709203F?\nMake sure a battery is plugged in!"));
-      initializationError(6);
-      while (1) delay(10);
+    if (!maxlipo.begin()) {
+      Serial.println("[Error] Battery monitor");
+      initializationError(4);
     }
-    Serial.println(F("Found LC709203F"));
-    Serial.print("Version: 0x"); Serial.println(lc.getICversion(), HEX);
-
-    lc.setThermistorB(3950);
-    Serial.print("Thermistor B = "); Serial.println(lc.getThermistorB());
-
-    lc.setPackSize(LC709203F_APA_1000MAH);
-    lc.setAlarmVoltage(3.8);
-
-    Serial.println("Printing battery info:");
-    printBatteryData();
+    Serial.print(F("[OK] Battery monitor MAX17048 initialized"));
+    Serial.print(F(" with Chip ID: 0x")); 
+    Serial.println(maxlipo.getChipID(), HEX);
+    maxlipo.setAlertVoltages(2.0, 4.2);
+    initializationPass(step);
+    step++;
 
     // Setup BNO055
     /* Initialise the sensor */
     if(!bno.begin())
     {
-      Serial.print("Error intializing BNO055 ... Check your wiring or I2C ADDR!");
-      while(1);
+      Serial.print("[ERROR] Error intializing BNO055.");
+      initializationError(step);
     }
   
     /* Use external crystal for better accuracy */
     bno.setExtCrystalUse(true);
-    Serial.println("BNO055 initialization OK");
+    Serial.println("[OK] BNO055 initialized");
+    initializationPass(step);
+    step++;
 
     // Setup bandpass filters
     branchF_START = createBandpassBranch(inputAmp, sampleRate, MESSAGE_START_FREQ, BANDWIDTH_FREQ);
@@ -224,7 +246,8 @@ void setup() {
     branchF_1 = createBandpassBranch(inputAmp, sampleRate, MESSAGE_1_FREQ, BANDWIDTH_FREQ);
     branchF_END = createBandpassBranch(inputAmp, sampleRate, MESSAGE_END_FREQ, BANDWIDTH_FREQ);
     Serial.println("Bandpass filters initialization OK");
-    initializationPass(3);
+    initializationPass(step);
+    step++;
 
     // Get audio shield up and running
     audioShield.enable();
@@ -233,25 +256,23 @@ void setup() {
     audioShield.volume(1);
     inputAmp.gain(2);        // amplify mic to useful range
     setAudioSampleI2SFreq(sampleRate); // Set I2S sampling frequency
-    Serial.printf("SGTL running at samplerate: %d\n", sampleRate);
-    initializationPass(4);
+    Serial.printf("[OK] SGTL running at samplerate: %d\n", sampleRate);
+    initializationPass(step);
+    step++;
 
     // Setup receiver state machine, and transition states
     transitionReceivingState(LISTENING);
     transitionOperatingMode(RECEIVE);
-    initializationPass(6);
+    Serial.println("[OK] State machine initialized");
+    initializationPass(step);
+    step++;
 
-    Serial.println("Done initializing! Starting now! In receiving default mode!");
+    Serial.println("Done initializing!! Starting now! In receiving default mode!");
+    Serial.println("Welcome to NEPTUNE >:)");
     strip.fill(bluishwhite, 0, 12); // light up entire strip, all set up!
     strip.show();
     delay(100);
 }
-
-// LED blinky anim stuff
-int counter = 0;
-bool dir = 1;
-long lastLEDUpdateTime = 0;
-long lastButtonCheckTime = 0;
 
 void loop() {
   /*********** LEDS */
@@ -268,19 +289,73 @@ void loop() {
     lastLEDUpdateTime = millis() + 1;
   }
 
+  /****************** BATTERY MONITOR */
+  if (millis() - lastBattCheckTime >= 1000) { // Check every 1 second
+    lastBattCheckTime = millis();
+
+    float cellVoltage = maxlipo.cellVoltage(); // Get cell voltage
+    if (isnan(cellVoltage)) {
+      Serial.println("[BATT] Failed to read cell voltage, check battery is connected!");
+    } else {
+      float cellPercent = maxlipo.cellPercent(); // Get battery percentage
+      Serial.printf("[BATT] Battery V: %d, %%:%d", cellVoltage, cellPercent);
+      lastCellVoltage = cellVoltage;
+
+      if (pctBufPointer == -1) { //First sample
+        for (int i=0; i<BATTERY_SAMPLES; i++) {
+          pctBuf[i] = maxlipo.cellVoltage();
+        }
+        pctBufPointer = 1; //Increment pointer
+      } else {
+        pctBuf[pctBufPointer] = maxlipo.cellVoltage();
+      }
+      pctBufPointer++;
+      if (pctBufPointer >= BATTERY_SAMPLES) {
+        pctBufPointer = 0;
+      }
+
+      float totPctBuf = 0.0;
+      for (int i = 0; i < BATTERY_SAMPLES; i++) {
+        totPctBuf += pctBuf[i];
+      }
+
+      float avgPctBuf = totPctBuf / 5.0;
+      float bufDifference = maxlipo.cellVoltage() - avgPctBuf;
+
+      if (millis() - lastPlayedBatteryTime > 3100) {
+        if (bufDifference > 0.05) {
+          Serial.println("[BATT] Neptune charging activated!");
+        } else if (bufDifference < -0.05) {
+          Serial.println("[BATT] Neptune charging deactivated!");
+        }
+        lastPlayedBatteryTime = millis();
+      }
+
+      // Check if the battery percentage has dropped by at least 10%
+      if ((int(cellPercent) / 10) < (int(lastPercentage) / 10)) {
+        int percentRange = (int(cellPercent) / 10) * 10;
+        Serial.print("[BATT] Battery dropped to ");
+        Serial.print(percentRange);
+        Serial.println("% range.");
+
+        lastPercentage = cellPercent; // Update the last known percentage
+      }
+    }
+  }
+
   /************ IMU SENSOR */
   if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS) {
     bno.getEvent(&bno_orientationData, Adafruit_BNO055::VECTOR_EULER);
     bno.getEvent(&bno_angVelocityData, Adafruit_BNO055::VECTOR_GYROSCOPE);
-    bno.getEvent(&magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
-    bno.getEvent(&accelerometerData, Adafruit_BNO055::VECTOR_ACCELEROMETER);
+    bno.getEvent(&bno_magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
+    bno.getEvent(&bno_accelerometerData, Adafruit_BNO055::VECTOR_ACCELEROMETER);
     bno_tempData = bno.getTemp();
     lastBNOReadTime = millis();
   }
 
   /**************** BIT STATISTICS */
   if (millis() - lastBitStatisticsTime >= 1000) {
-    Serial.printf("[BIT STATISTICS] Tx: %d, Rx: %d, ErrRx: %d, \%ErrRx:%.3f\n", bitsTransmitted, bitsReceived, errorsReceived, (float)errorsReceived/(float)bitsReceived);
+    Serial.printf("[BIT STATISTICS] Tx: %d, Rx: %d, ErrRx: %d, %%ErrRx:%.3f\n", bitsTransmitted, bitsReceived, errorsReceived, (float)errorsReceived/(float)bitsReceived);
     lastBitStatisticsTime = millis();
   }
   
@@ -317,10 +392,10 @@ void loop() {
   /**************** TONE RECEIVING */
   // Input samples into samplebuffer. CountTonePresentSamples will free queue memory as necessary
   // 2nd argument is threshold, input values are -32768 to 32767 so this is sort of arbitrary
-  startSamples = countTonePresentSamples(branchF_START, 2000);
-  F0Samples = countTonePresentSamples(branchF_0, 2000);
-  F1Samples = countTonePresentSamples(branchF_1, 2000);
-  endSamples = countTonePresentSamples(branchF_END, 2000);
+  int startSamples = countTonePresentSamples(branchF_START->queue);
+  int F0Samples = countTonePresentSamples(branchF_0->queue);
+  int F1Samples = countTonePresentSamples(branchF_1->queue);
+  int endSamples = countTonePresentSamples(branchF_END->queue);
 
   // Then add samples to sampling buffer
   if (sampling) {
@@ -338,9 +413,9 @@ void loop() {
     }
 
   } else if ((curReceivingState == CHECK_START || curReceivingState == MESSAGE_GET_BIT) && (doesSampleBufferHaveCountOfFreq(MESSAGE_END_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || bitPointer >= MESSAGE_LENGTH)) { // We got the end message bit OR bit buffer is full, thus message is over
-    transitionState(DECODE_MESSAGE);
+    transitionReceivingState(DECODE_MESSAGE);
 
-  } else if (curRecievingState == CHECK_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten all start samples OR have we started to transition into the bit (ie our timing was misaligned)?
+  } else if (curReceivingState == CHECK_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten all start samples OR have we started to transition into the bit (ie our timing was misaligned)?
 
     if (doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_VALID)) {
       transitionReceivingState(MESSAGE_GET_BIT); //Currently receiving valid message
@@ -361,7 +436,7 @@ void loop() {
     }
     bitPointer++;
     bitsReceived++;
-    transitionState(INTERMEDIATE_START);
+    transitionReceivingState(INTERMEDIATE_START);
 
   } else if (curReceivingState == DECODE_MESSAGE) {
     // Message decoding here
@@ -374,63 +449,99 @@ void loop() {
     int errorPos = 0;
     bool doubleError = false;
     UnderwaterMessage decoded = UnderwaterMessage::decodeHamming(encoded, &errorPos, &doubleError);
-    UnderwaterMessage response;
+    UnderwaterMessage response(NODE_ID, 0);
 
     if (doubleError) {
         Serial.println("[RECV] Double-bit uncorrectable error in received result");
         errorsReceived+=2;
-        response.id = 255; // Double bit error
+        response.msg = 255; // Double bit error - put 255 in message field
         transmitMessageAsync(response); // Send error response back to transmitter TODO maybe comment out
     } else if (errorPos > 0) {
         Serial.print("[RECV] Corrected single-bit error at position: ");
         Serial.println(errorPos);
         errorsReceived++;
     } else {
-        Serial.println("No error detected.");
+        Serial.println("[RECV] No error detected.");
     }
 
     // Bit of an edge case: the double error could have been in the ID field. But if that's true, the message is simply invalid. For now we will send back a 255 error
     if (!doubleError) {
+      Serial.printf("Got ID: |0x%.2x|, MSG: |0x%.8x|\n", decoded.getID(), decoded.getMsg());
       if (decoded.getID() == NODE_ID) { // Only respond to messages to our ID
         response.id = NODE_ID; // Response ID is our node id
         switch (decoded.getMsg()) {
-          case 0: // Alive check
-            response.msg = 0xFF; // All 1s
-            break;
           case 1: // Gyro X data
-            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.x, -200.0, 200.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_angVelocityData.gyro.x, -200.0, 200.0, 0.0, 255.0);
             break;
           case 2: // Gyro Y data
-            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.y, -200.0, 200.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_angVelocityData.gyro.y, -200.0, 200.0, 0.0, 255.0);
             break;
           case 3: // Gyro Z data
-            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.z, -200.0, 200.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_angVelocityData.gyro.z, -200.0, 200.0, 0.0, 255.0);
             break;
           case 4: // Accel X data
-            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.x, -5.0, 5.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_accelerometerData.acceleration.x, -5.0, 5.0, 0.0, 255.0);
             break;
           case 5: // Accel Y data
-            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.y, -5.0, 5.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_accelerometerData.acceleration.y, -5.0, 5.0, 0.0, 255.0);
             break;
           case 6: // Accel Z data
-            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.z, -5.0, 5.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_accelerometerData.acceleration.z, -5.0, 5.0, 0.0, 255.0);
             break;
           case 7: // Mag X data
-            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.x, -500.0, 500.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_magnetometerData.magnetic.x, -500.0, 500.0, 0.0, 255.0);
             break;
           case 8: // Mag Y data
-            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.y, -500.0, 500.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_magnetometerData.magnetic.y, -500.0, 500.0, 0.0, 255.0);
             break;
           case 9: // Mag Z data
-            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.z, -500.0, 500.0, 0.0, 255.0);
+            response.msg = (int8_t)mapf(bno_magnetometerData.magnetic.z, -500.0, 500.0, 0.0, 255.0);
+            break;
+          case 10: // Ori X data
+            response.msg = (int8_t)mapf(bno_orientationData.orientation.x, 0.0, 360.0, 0.0, 255.0);
+            break;
+          case 11: // Ori Y data
+            response.msg = (int8_t)mapf(bno_orientationData.orientation.y, 0.0, 360.0, 0.0, 255.0);
+            break;
+          case 12: // Ori Z data
+            response.msg = (int8_t)mapf(bno_orientationData.orientation.z, 0.0, 360.0, 0.0, 255.0);
+            break;
+          case 13: // Temp data
+            response.msg = (int8_t)bno_tempData; // Already int8
+            break;
+
+          case 14: // Toggle LEDs
+            if (LED_BRIGHTNESS == 0) {
+              LED_BRIGHTNESS = 100;
+              response.msg = 0xFF; //return new state
+            } else {
+              LED_BRIGHTNESS = 0;
+              response.msg = 0x00;
+            }
+            strip.setBrightness(LED_BRIGHTNESS);
+            break;
+
+          case 15: // Get battery voltage
+            response.msg = (int8_t)mapf(lastCellVoltage, 0.0, 4.2, 0.0, 255.0);
+            break;
+          
+          case 16: // Get battery percent
+            response.msg = (int8_t)mapf(lastPercentage, 0.0, 100.0, 0.0, 255.0);
+            break;
+          
+          case 0: // Alive check
+          default:
+            response.msg = 0xAA; // Alive check is alternating 0s and 1s
             break;
         }
 
         transmitMessageAsync(response); // Send response back to transmitter
+      } else {
+        Serial.printf("[RECV] Message not to our ID (was for ID=%d), not responding\n", decoded.getID());
       }
     }
     
-    transitionState(LISTENING); // Go back to listening once decoding is done
+    transitionReceivingState(LISTENING); // Go back to listening once decoding is done
   }
 }
 
@@ -452,21 +563,24 @@ void transitionReceivingState(RECEIVING_STATE newState) {
   curReceivingState = newState; // Set our current state to the new one
 }
 
-int countTonePresentSamples(AudioRecordQueue* queue, int16_t threshold) {
+int countTonePresentSamples(AudioRecordQueue* queue) {
   int matches = 0;
   while (queue->available() > 0) {
-    audio_block_t* block = queue->readBuffer();
-    if (!block) continue;
+    int16_t* data = queue->readBuffer();
+
+    if (!data) continue;
 
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-      if (abs(block->data[i]) >= threshold) matches++;
+      int16_t sample = abs(data[i]);
+      if (sample >= MIN_VALID_AMP && sample <= MAX_VALID_AMP) matches++;
     }
 
-    queue->freeBuffer();  // Free the block
+    queue->freeBuffer();  // <- No argument needed, frees the last buffer
   }
 
-  return matches;  // No tone detected
+  return matches;
 }
+
 
 void addSamplesToBuffer(int sampleFreq, int count) {
   for (int i=0; i<count; i++) {
@@ -478,15 +592,14 @@ void addSamplesToBuffer(int sampleFreq, int count) {
   }
 }
 
-double mapf(double x, double in_min, double in_max, double out_min, double out_max)
-{
+double mapf(double x, double in_min, double in_max, double out_min, double out_max){
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-void doesSampleBufferHaveCountOfFreq(int freq, int countMatch) {
+bool doesSampleBufferHaveCountOfFreq(int freq, int countMatch) {
   int count = 0;
   for (int i=0; i<NUM_SAMPLES; i++) {
-    if (sampleBuffer[i] == freq) count++;
+    if (samplingBuffer[i] == freq) count++;
   }
   return count >= countMatch;
 }
@@ -512,38 +625,6 @@ void transitionOperatingMode(OPERATING_MODE newMode) {
         digitalWrite(RELAY_PIN, HIGH); // make relays go into transmit mode
     }
     mode = newMode;
-}
-
-void printBatteryData(){
-  //colors
-  uint32_t green = strip.Color(0, 255, 0);
-  uint32_t red = strip.Color(255, 0, 0);
-  uint32_t orange = strip.Color(255, 150, 0);
-  uint32_t yellow = strip.Color(255, 255, 0);
-
-    // time = millis()
-    Serial.print("Batt_Voltage:");
-    Serial.print(lc.cellVoltage(), 3);
-    Serial.print("\t");
-    Serial.print("Batt_Percent:");
-    Serial.print(lc.cellPercent(), 1);
-    Serial.print("\t");
-    Serial.print("Batt_Temp:");
-    Serial.println(lc.getCellTemperature(), 1);
-
-    if (lc.cellPercent() > 80){
-        strip.fill(green, 0, 7);
-    }
-    else if (lc.cellPercent() > 60){
-        strip.fill(yellow, 0, 5);
-    }
-    else if (lc.cellPercent() > 20){
-        strip.fill(orange, 0, 3);
-    }
-    else{
-        strip.fill(red, 0, 1);
-    }
-    strip.show();
 }
 
 void clearSampleBuffer() {

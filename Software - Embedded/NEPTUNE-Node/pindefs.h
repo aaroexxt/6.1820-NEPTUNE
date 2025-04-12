@@ -5,7 +5,7 @@
     // THESE ARE PINS ON THE TEENSY
     #define LED_PIN  2
     #define LED_COUNT 20
-    #define LED_BRIGHTNESS 100
+    int LED_BRIGHTNESS = 100;
 
     // Hydrophone output pin
     #define HYDROPHONE_PIN 3 // Which pin is the output?
