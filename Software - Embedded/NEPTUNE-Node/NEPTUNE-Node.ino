@@ -6,13 +6,12 @@
 
 //Import audio-related libraries
 #include <Audio.h>
-#include <SD.h>
 #include <SPI.h>
 #include <Wire.h>
 
 // Import other device libraries
-#include <Adafruit_LC709203F.h> // Battery monitor
-#include <Adafruit_BNO055.h>
+#include "Adafruit_MAX1704X.h" // Battery monitor
+#include <Adafruit_BNO055.h> // Accel, Gyro, Mag, Temp
 #include <Adafruit_NeoPixel.h> // LEDs
 
 // Import default pindefs
@@ -29,14 +28,16 @@ uint32_t greenishwhite = strip.Color(64, 0, 0, 64); // g r b w
 uint32_t bluishwhite = strip.Color(0, 0, 64, 64);
 
 Adafruit_LC709203F lc;
-
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28, &Wire);
+sensors_event_t bno_orientationData, bno_angVelocityData, bno_magnetometerData, bno_accelerometerData;
+int8_t bno_tempData;
+unsigned long lastBNOReadTime = 0;
+#define BNO055_SAMPLERATE_DELAY_MS 100
 
 /************* AUDIO SHIELD / PIPELINE SETUP */
+// For SGTL5000
 const int micInput = AUDIO_INPUT_MIC;
-const int chipSelect = 10; 
-
-// potentiometer (volume control)
-const int potPin = 15;
+const int chipSelect = 10;
 
 // SELECT SAMPLE RATE
 const uint32_t sampleRate = 44100;
@@ -44,48 +45,89 @@ const uint32_t sampleRate = 44100;
 // const uint32_t sampleRate = 192000;
 //const uint32_t sampleRate = 234000;
 
-/************** AUDIO OUTPUT CHAIN (BONE CONDUCTION OUT) */
-AudioPlaySdWav          playBoneconduct;       //xy=87,384
-// AudioPlayMemory          playBoneconduct;       //xy=87,384
-AudioAmplifier           outputAmp;           //xy=309,351
-AudioOutputI2S           audioOutput;           //xy=573,377
-AudioConnection          patchCord1(playBoneconduct, outputAmp);
-AudioConnection          patchCord2(outputAmp, 0, audioOutput, 0);
-
 /*************** AUDIO INPUT CHAIN (HYDROPHONE IN) */
-const int myInput = AUDIO_INPUT_MIC;
 AudioControlSGTL5000    audioShield;
 AudioInputI2S            audioInput;           //xy=180,111
 AudioAmplifier           inputAmp;           //xy=470,93
-AudioAnalyzeFFT1024      inputFFT;      //xy=616,102
 AudioConnection          patchCord3(audioInput, 0, inputAmp, 0);
-AudioConnection          patchCord4(inputAmp, 0, inputFFT, 0);
 
 /************** SAMPLE BUFFER LOGIC / RECEIVING STATE MACHINE
-Each bin is numbered 0-1023 and has a float with its amplitude
-SamplingBuffer is a time-valued array that records bin number
+We use 4 bandpass filters around each frequency of interest
+Each bandpass filter is a biquad filter with multiple cascaded stages to narrow the filter effective passband.
 */
 #define MESSAGE_BIT_DELAY 250 // ms between bits
-#define NUM_SAMPLES ((int)(((MESSAGE_BIT_DELAY / 10.0) * (86.0 / 100.0)) + 1.0 + 0.9999))
+// in theory, we are getting 44100 samples out of bandpass per sec
+#define NUM_SAMPLES (int)((MESSAGE_BIT_DELAY / 1000.0) * sampleRate)
 int16_t samplingBuffer[NUM_SAMPLES]; // BIN indices
 uint16_t samplingPointer = 0; //How many samples have we seen?
 #define MESSAGE_LENGTH UnderwaterMessage::size
 bool bitBuffer[MESSAGE_LENGTH]; // Message sample buffer (1 or 0)
 int bitPointer = 0;
-#define FFT_BIN_WIDTH 43.0664
+int bitsReceived = 0; // Trackers for bits and bit errors received (for tx/rx statistics)
+int bitsTransmitted = 0;
+int errorsReceived = 0;
+unsigned long lastBitStatisticsTime = 0;
 #define MESSAGE_START_FREQ 20000 // Hz (1/sec)
 #define MESSAGE_0_FREQ 17500 // Hz
 #define MESSAGE_1_FREQ 15000 // Hz
-#define MESSAGE_LOWPASS_CUTOFF_FREQ 10000
-#define FFT_BIN_CUTOFF (int)(MESSAGE_LOWPASS_CUTOFF_FREQ/FFT_BIN_WIDTH) //Lowpass cutoff
+#define MESSAGE_END_FREQ 22000 // Hz (1/sec)
+
 #define MIN_VALID_AMP 0.1
 #define MAX_VALID_AMP 1.5
-#define BOUNDS_FREQ 1500
+#define BANDWIDTH_FREQ 500 // Width of bounds around center frequency for each bandpass filter
+
+/********************* BANDPASS FILTERS */
+struct BandpassBranch {
+  // Keep track of the biquad filter (multi-stage used), the audio queue and audio connection objects
+  AudioFilterBiquad* filter;
+  AudioRecordQueue* queue;
+  AudioConnection* inputToFilter;
+  AudioConnection* filterToQueue;
+};
+
+BandpassBranch* createBandpassBranch(AudioStream& input,
+                                     float sampleRate,
+                                     float centerFreq,
+                                     float bandwidth,
+                                     int stages = 3) {
+  // Allocate a container for all parts of the branch
+  BandpassBranch* branch = new BandpassBranch;
+
+  // Allocate audio components
+  branch->filter = new AudioFilterBiquad();
+  branch->queue = new AudioRecordQueue();
+
+  // Compute quality factor for each stage
+  float Q_total = centerFreq / bandwidth;
+  float Q_stage = Q_total / sqrt((float)stages);
+  float coeffs[5];
+
+  for (int i = 0; i < stages; i++) {
+    AudioFilterBiquad::makeBandpass(coeffs, sampleRate, centerFreq, Q_stage);
+    branch->filter->setCoefficients(i, coeffs);
+  }
+
+  // Hook up audio connections
+  branch->inputToFilter = new AudioConnection(input, 0, *branch->filter, 0);
+  branch->filterToQueue = new AudioConnection(*branch->filter, 0, *branch->queue, 0);
+
+  return branch;
+}
+
+// Create bandpass filters for each branch
+BandpassBranch* branchF_START;
+BandpassBranch* branchF_0;
+BandpassBranch* branchF_1;
+BandpassBranch* branchF_END;
+
+/**************** STATE MACHINE */
 
 typedef enum {
   LISTENING, //Waiting for start frequency
   CHECK_START,
-  MESSAGE_ACTIVE //Currently receiving bytes
+  INTERMEDIATE_START,
+  DECODE_MESSAGE,
+  MESSAGE_GET_BIT //Currently receiving bytes
 } RECEIVING_STATE;
 
 RECEIVING_STATE curReceivingState = LISTENING;
@@ -118,17 +160,10 @@ void setup() {
     Steps:
     1) Initialize:
         - Blink blue to show that we are alive!
-        - LED strip, battery monitor, audio shield, I/O expander
+        - LED strip, battery monitor, audio shield
         - Blink green to show initialization good!
         - If anything fails: display full red on LED strip
     */
-
-    // Initialize SD card
-    if (!SD.begin(10)) {
-      Serial.println("SD card initialization failed!");
-      return;
-    }
-    Serial.println("SD card initialized.");
 
     // Setup pin modes
     pinMode(LED_PIN, OUTPUT);
@@ -147,59 +182,59 @@ void setup() {
     delay(500); 
     strip.clear();
 
-    // Assign underwater messages
-    for (int i=1; i<=sizeof(UM_array)/sizeof(UM_array[0]); i++) {
-      UM_array[i] = createUnderwaterMessage(i, user_ID);
-    }
+    Serial.printf("NEPTUNE-NODE Initializing. Node-ID=%d\n", NODE_ID);
 
-    // Get IO expander up and running
-    if (!mcp.begin_I2C()) {
-        Serial.println("Error: I2C connection with IO expander.");
-        initializationError(2);
-    }
-    //Pinmode for I/O expander pins
-    for (int i=0; i<6; i++) {
-      mcp.pinMode(i, INPUT_PULLUP);
-    }
     initializationPass(2);
     
-    // Get battery monitor up and running
-    // Wire.setClock(100000);
-    // //Battery check setup
-    // if (!lc.begin()) {
-    // Serial.println(F("Couldnt find Adafruit LC709203F?\nMake sure a battery is plugged in!"));
-    // initializationError(6);
-    // while (1) delay(10);
-    // }
-    // Serial.println(F("Found LC709203F"));
-    // Serial.print("Version: 0x"); Serial.println(lc.getICversion(), HEX);
+    // Get battery monitor (LC709203F) up and running
+    Wire.setClock(100000);
+    // Battery check setup
+    if (!lc.begin()) {
+      Serial.println(F("Error initializing LC709203F?\nMake sure a battery is plugged in!"));
+      initializationError(6);
+      while (1) delay(10);
+    }
+    Serial.println(F("Found LC709203F"));
+    Serial.print("Version: 0x"); Serial.println(lc.getICversion(), HEX);
 
-    // lc.setThermistorB(3950);
-    // Serial.print("Thermistor B = "); Serial.println(lc.getThermistorB());
+    lc.setThermistorB(3950);
+    Serial.print("Thermistor B = "); Serial.println(lc.getThermistorB());
 
-    // lc.setPackSize(LC709203F_APA_500MAH);
-    // lc.setAlarmVoltage(3.8);
-    // initializationPass(6);
+    lc.setPackSize(LC709203F_APA_1000MAH);
+    lc.setAlarmVoltage(3.8);
 
-    // delay(1000);
-    // Serial.println("PRINTING BATTERY INFO");
-    // printBatteryData();
-    // delay(5000);
+    Serial.println("Printing battery info:");
+    printBatteryData();
+
+    // Setup BNO055
+    /* Initialise the sensor */
+    if(!bno.begin())
+    {
+      Serial.print("Error intializing BNO055 ... Check your wiring or I2C ADDR!");
+      while(1);
+    }
+  
+    /* Use external crystal for better accuracy */
+    bno.setExtCrystalUse(true);
+    Serial.println("BNO055 initialization OK");
+
+    // Setup bandpass filters
+    branchF_START = createBandpassBranch(inputAmp, sampleRate, MESSAGE_START_FREQ, BANDWIDTH_FREQ);
+    branchF_0 = createBandpassBranch(inputAmp, sampleRate, MESSAGE_0_FREQ, BANDWIDTH_FREQ);
+    branchF_1 = createBandpassBranch(inputAmp, sampleRate, MESSAGE_1_FREQ, BANDWIDTH_FREQ);
+    branchF_END = createBandpassBranch(inputAmp, sampleRate, MESSAGE_END_FREQ, BANDWIDTH_FREQ);
+    Serial.println("Bandpass filters initialization OK");
+    initializationPass(3);
 
     // Get audio shield up and running
-    inputAmp.gain(2);        // amplify mic to useful range
-    outputAmp.gain(2);
     audioShield.enable();
-    audioShield.inputSelect(myInput);
+    audioShield.inputSelect(micInput);
     audioShield.micGain(90);
     audioShield.volume(1);
+    inputAmp.gain(2);        // amplify mic to useful range
     setAudioSampleI2SFreq(sampleRate); // Set I2S sampling frequency
     Serial.printf("SGTL running at samplerate: %d\n", sampleRate);
     initializationPass(4);
-    
-    // Get BC transducer amp up and running 
-    audioamp.begin();
-    audioamp.setGain(30);
 
     // Setup receiver state machine, and transition states
     transitionReceivingState(LISTENING);
@@ -219,25 +254,7 @@ long lastLEDUpdateTime = 0;
 long lastButtonCheckTime = 0;
 
 void loop() {
-  if (toneStackPos == 0) {
-    strip.clear(); // Set all pixel colors to 'off' if queue is empty
-    transitionOperatingMode(RECEIVE); // Switch relays to receive mode
-  }
-
-  int potValue = analogRead(potPin);
-  // Map the potentiometer value to amplifier gain (0-30 dB)
-  int gainValue = map(potValue, 0, 1023, 0, 30);
-
-  // Set the amplifier gain
-  audioamp.setGain(gainValue);
-
-  // playBoneconduct.play("ONE.wav");
-  // Serial.print("Potentiometer val: ");
-  // Serial.print(potValue);
-  // Serial.print(" -> Gain: ");
-  // Serial.println(gainValue);
-
-  // LED pulsating effect!
+  /*********** LEDS */
   if (millis() > lastLEDUpdateTime) {
     uint32_t color = strip.Color(counter, 0, 0, 30); // r g b w
     if (dir) {
@@ -250,8 +267,29 @@ void loop() {
     strip.show();
     lastLEDUpdateTime = millis() + 1;
   }
+
+  /************ IMU SENSOR */
+  if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS) {
+    bno.getEvent(&bno_orientationData, Adafruit_BNO055::VECTOR_EULER);
+    bno.getEvent(&bno_angVelocityData, Adafruit_BNO055::VECTOR_GYROSCOPE);
+    bno.getEvent(&magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
+    bno.getEvent(&accelerometerData, Adafruit_BNO055::VECTOR_ACCELEROMETER);
+    bno_tempData = bno.getTemp();
+    lastBNOReadTime = millis();
+  }
+
+  /**************** BIT STATISTICS */
+  if (millis() - lastBitStatisticsTime >= 1000) {
+    Serial.printf("[BIT STATISTICS] Tx: %d, Rx: %d, ErrRx: %d, \%ErrRx:%.3f\n", bitsTransmitted, bitsReceived, errorsReceived, (float)errorsReceived/(float)bitsReceived);
+    lastBitStatisticsTime = millis();
+  }
   
-  //Deal with tone sending (asynchronous tone)
+  /**************** TONE SENDING */
+  if (toneStackPos == 0) {
+    strip.clear(); // Set all pixel colors to 'off' if queue is empty
+    transitionOperatingMode(RECEIVE); // Switch relays to receive mode
+  }
+
   if (toneStackPos > 0) {
     if (millis() - lastToneStart > toneDelayQueue[0]) {
       // Serial.print("ToneQueue: ");
@@ -266,7 +304,8 @@ void loop() {
       toneStackPos--; //we’ve removed one from the stack
       if (toneStackPos > 0) { //is there something new to start playing?
           if (toneFreqQueue[0] > 0) {
-          tone(HYDROPHONE_PIN, toneFreqQueue[0]); //start new tone
+            tone(HYDROPHONE_PIN, toneFreqQueue[0]); //start new tone
+            bitsTransmitted++;
           }
           lastToneStart = millis();
       } else {
@@ -275,142 +314,181 @@ void loop() {
     }
   }
 
-  // FFT has new data! Reads in data 
-  if (inputFFT.available()) {
-    // each time new FFT data is available
-    float maxBinAmp = 0;
-    int binNumber = 0;
-    for (int i = 0; i < 1024; i++) {
-      float n = inputFFT.read(i);
-      if (n > maxBinAmp && i >= FFT_BIN_CUTOFF) { // Ensure we only read above the lowpass cutoff
-        maxBinAmp = n;
-        binNumber = i;
-      }
+  /**************** TONE RECEIVING */
+  // Input samples into samplebuffer. CountTonePresentSamples will free queue memory as necessary
+  // 2nd argument is threshold, input values are -32768 to 32767 so this is sort of arbitrary
+  startSamples = countTonePresentSamples(branchF_START, 2000);
+  F0Samples = countTonePresentSamples(branchF_0, 2000);
+  F1Samples = countTonePresentSamples(branchF_1, 2000);
+  endSamples = countTonePresentSamples(branchF_END, 2000);
+
+  // Then add samples to sampling buffer
+  if (sampling) {
+    addSamplesToBuffer(MESSAGE_START_FREQ, startSamples);
+    addSamplesToBuffer(MESSAGE_0_FREQ, F0Samples);
+    addSamplesToBuffer(MESSAGE_1_FREQ, F1Samples);
+    addSamplesToBuffer(MESSAGE_END_FREQ, endSamples);
+  }
+
+  if (curReceivingState == LISTENING) {
+
+    // Does the sampling buffer currently contain at least THRESHOLD_SAMPLES_MIN_DETECT examples of start frequency?
+    if (doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_MIN_DETECT)) {
+      transitionReceivingState(CHECK_START);
     }
-    Serial.print((double)binNumber*(double)FFT_BIN_WIDTH);
-    Serial.print("Hz@");
-    Serial.println(maxBinAmp);
-    if (sampling) { // Valid start freq was received, message is actively being received 
-      if (validAmplitude(maxBinAmp)) {
-        samplingBuffer[samplingPointer] = binNumber; // Commit sample (bin number) to memory
-        samplingPointer++;
-        if (samplingPointer >= NUM_SAMPLES) { // Wrap around end of buffer
-          samplingPointer = 0;
+
+  } else if ((curReceivingState == CHECK_START || curReceivingState == MESSAGE_GET_BIT) && (doesSampleBufferHaveCountOfFreq(MESSAGE_END_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || bitPointer >= MESSAGE_LENGTH)) { // We got the end message bit OR bit buffer is full, thus message is over
+    transitionState(DECODE_MESSAGE);
+
+  } else if (curRecievingState == CHECK_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten all start samples OR have we started to transition into the bit (ie our timing was misaligned)?
+
+    if (doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, THRESHOLD_SAMPLES_VALID)) {
+      transitionReceivingState(MESSAGE_GET_BIT); //Currently receiving valid message
+    } else { // If buffer is not valid OR freq doesn’t match start
+      transitionReceivingState(LISTENING);
+    }
+
+  } else if (curReceivingState == INTERMEDIATE_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { //Either bitChange time has elapsed or we got a 0 or 1 frequency
+
+    transitionReceivingState(MESSAGE_GET_BIT);
+
+  } else if (curReceivingState == MESSAGE_GET_BIT && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_START_FREQ, 2))) { // Gotten our 1/0 samples OR have we started to transition back to start state (ie timing misaligned again)
+    
+    if (doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_VALID)) {
+      bitBuffer[bitPointer] = 1; // WE GOT A 1
+    } else {
+      bitBuffer[bitPointer] = 1; // WE GOT A 0
+    }
+    bitPointer++;
+    bitsReceived++;
+    transitionState(INTERMEDIATE_START);
+
+  } else if (curReceivingState == DECODE_MESSAGE) {
+    // Message decoding here
+    uint16_t encoded = 0;
+    // Combine bits in bitBuffer into a single byte
+    for (int i = MESSAGE_LENGTH - 1; i >= 0; i--) {
+      encoded = (encoded << 1) | bitBuffer[i];
+    }
+
+    int errorPos = 0;
+    bool doubleError = false;
+    UnderwaterMessage decoded = UnderwaterMessage::decodeHamming(encoded, &errorPos, &doubleError);
+    UnderwaterMessage response;
+
+    if (doubleError) {
+        Serial.println("[RECV] Double-bit uncorrectable error in received result");
+        errorsReceived+=2;
+        response.id = 255; // Double bit error
+        transmitMessageAsync(response); // Send error response back to transmitter TODO maybe comment out
+    } else if (errorPos > 0) {
+        Serial.print("[RECV] Corrected single-bit error at position: ");
+        Serial.println(errorPos);
+        errorsReceived++;
+    } else {
+        Serial.println("No error detected.");
+    }
+
+    // Bit of an edge case: the double error could have been in the ID field. But if that's true, the message is simply invalid. For now we will send back a 255 error
+    if (!doubleError) {
+      if (decoded.getID() == NODE_ID) { // Only respond to messages to our ID
+        response.id = NODE_ID; // Response ID is our node id
+        switch (decoded.getMsg()) {
+          case 0: // Alive check
+            response.msg = 0xFF; // All 1s
+            break;
+          case 1: // Gyro X data
+            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.x, -200.0, 200.0, 0.0, 255.0);
+            break;
+          case 2: // Gyro Y data
+            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.y, -200.0, 200.0, 0.0, 255.0);
+            break;
+          case 3: // Gyro Z data
+            response.msg = (int8_t)mapf(bno_angVelocityData->gyro.z, -200.0, 200.0, 0.0, 255.0);
+            break;
+          case 4: // Accel X data
+            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.x, -5.0, 5.0, 0.0, 255.0);
+            break;
+          case 5: // Accel Y data
+            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.y, -5.0, 5.0, 0.0, 255.0);
+            break;
+          case 6: // Accel Z data
+            response.msg = (int8_t)mapf(bno_accelerometerData->acceleration.z, -5.0, 5.0, 0.0, 255.0);
+            break;
+          case 7: // Mag X data
+            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.x, -500.0, 500.0, 0.0, 255.0);
+            break;
+          case 8: // Mag Y data
+            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.y, -500.0, 500.0, 0.0, 255.0);
+            break;
+          case 9: // Mag Z data
+            response.msg = (int8_t)mapf(bno_magnetometerData->magnetic.z, -500.0, 500.0, 0.0, 255.0);
+            break;
         }
-        // Serial.print("FFT: ");
-        // Serial.print(binNumber);
-        // Serial.print(" sampBufDepth: ");
-        // Serial.println(samplingPointer);
+
+        transmitMessageAsync(response); // Send response back to transmitter
       }
     }
     
-    // We get valid message start tone!
-    if (curReceivingState == LISTENING) {
-      if (validAmplitude(maxBinAmp) && freqMatchesBounds((double)binNumber * (double)FFT_BIN_WIDTH, BOUNDS_FREQ, MESSAGE_START_FREQ)) {
-        transitionReceivingState(CHECK_START); // Check start is actively checking if we've gotten start frequencies before recording the message 
-      }
-    } else if (curReceivingState == CHECK_START && millis() - lastBitChange >= MESSAGE_BIT_DELAY) { // Gotten all start samples
-      if (isSampleBufferValid() && freqMatchesBounds(sampleBufferMax(), BOUNDS_FREQ, MESSAGE_START_FREQ)) {
-        Serial.println("SAW VALID MESSAGE START FREQ!");
-        transitionReceivingState(MESSAGE_ACTIVE); //Currently receiving valid message
-      } else { // If buffer is not valid OR freq doesn’t match start
-        transitionReceivingState(LISTENING);
-      }
-    } else if (curReceivingState == MESSAGE_ACTIVE && millis() - lastBitChange >= MESSAGE_BIT_DELAY) {
-      if (isSampleBufferValid()) { // is our sample buffer valid?
-        // Check if 1 or 0 (or neither)
-        double bufferAvgFreq = sampleBufferMax();
-        if (freqMatchesBounds(bufferAvgFreq, BOUNDS_FREQ, MESSAGE_1_FREQ)) {
-          bitBuffer[bitPointer] = 1; // WE GOT A 1
-        } else if (freqMatchesBounds(bufferAvgFreq, BOUNDS_FREQ, MESSAGE_0_FREQ)) {
-          bitBuffer[bitPointer] = 0; // WE GOT A 0
-        }
-      }
+    transitionState(LISTENING); // Go back to listening once decoding is done
+  }
+}
 
-      clearSampleBuffer();
-      lastBitChange = millis() - 5; //Reset bit timer, accoutn for delay of computation
-      bitPointer++;
+// Transition state function
+void transitionReceivingState(RECEIVING_STATE newState) {
+  Serial.print("transitionReceivingState: ");
+  Serial.println(newState);
+  if (newState == CHECK_START || newState == INTERMEDIATE_START || newState == MESSAGE_GET_BIT) {
+    clearSampleBuffer();
+    sampling = 1; // Begin sampling
+    lastBitChange = millis(); // Start timer
+  } else if (newState == DECODE_MESSAGE) {
+    sampling = 0; // Stop sampling
+  } else { //Back to LISTENING
+    clearSampleBuffer();
+    clearBitBuffer();
+    sampling = 1;
+  }
+  curReceivingState = newState; // Set our current state to the new one
+}
 
-      if (bitPointer >= MESSAGE_LENGTH) { // We got all our samples!
-        uint8_t data = 0;
-        // Combine bits in bitBuffer into a single byte
-        for (int i = MESSAGE_LENGTH - 1; i >= 0; i--) {
-          data = (data << 1) | bitBuffer[i];
-        }
-        // Assign the data to an UnderwaterMessage
-        UnderwaterMessage recvdMessage;
-        recvdMessage.data = data;
-        Serial.print("Got message raw!!! MSG = ");
-        Serial.print(recvdMessage.msg);
-        Serial.print(", ID = ");
-        Serial.print(recvdMessage.id);
-        Serial.print(" --- ");
-        for (int i = UnderwaterMessage::size - 1; i >= 0; i--) {
-          // Shift and mask to get each bit
-          Serial.print((recvdMessage.data >> i) & 1);
-        }
+int countTonePresentSamples(AudioRecordQueue* queue, int16_t threshold) {
+  int matches = 0;
+  while (queue->available() > 0) {
+    audio_block_t* block = queue->readBuffer();
+    if (!block) continue;
 
-        strip.fill(red, 0, recvdMessage.id+1);
-        strip.show();
-        lastLEDUpdateTime = millis() + 1000;
-
-        if (validUnderwaterMessage(recvdMessage)) {
-          // Play audio corresponding to usert
-          Serial.print(" --- USER: ");
-          Serial.print(user_ids_array[recvdMessage.id]);
-
-          playBoneconduct.play("USER.wav");
-          while (playBoneconduct.isPlaying());
-          playBoneconduct.play(audio_ids_array[recvdMessage.id]);
-          while (playBoneconduct.isPlaying());
-          playBoneconduct.play("SAID.wav");
-          while (playBoneconduct.isPlaying());
-
-          for (int c = 0; c < 6; c++) {
-            if (recvdMessage.msg == UM_array[c].msg) {
-                Serial.print(" --- MESSAGE:");
-                Serial.println(message_array[c]);
-                playBoneconduct.play(audio_messages_array[c]);
-            }
-          }
-        }
-
-        transitionReceivingState(LISTENING); // Return to listening state
-      }
+    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+      if (abs(block->data[i]) >= threshold) matches++;
     }
+
+    queue->freeBuffer();  // Free the block
   }
 
-  // BUTTONS AND TRANSMITTING
-  if (millis() - lastButtonCheckTime >= 500) {
-    for (int b = 0; b < 6; b++) {
-      // Serial.print(mcp.digitalRead(buttons[b]));
-      if (mcp.digitalRead(buttons[b]) == LOW) {
-        lastButtonCheckTime = millis(); //Ensure 250ms between reads
-        Serial.print("Sending message ID: ");
-        Serial.println(b);
-        strip.clear();
+  return matches;  // No tone detected
+}
 
-        // LED CONFIRMATION
-        strip.fill(red, 0, b+1);
-        strip.show();
-        lastLEDUpdateTime = millis() + 1000;
-
-        // BONE CONDUCTION CONFIRMATION
-        playBoneconduct.play("YOUSAID.wav");
-        while (playBoneconduct.isPlaying());
-        playBoneconduct.play(audio_messages_array[b]); 
-
-        transmitMessageAsync(UM_array[b]); // Add to queue!
-
-        // Serial.println("Queued message! message in binary: ");
-        for (int i = UnderwaterMessage::size - 1; i >= 0; i--) {
-            // Shift and mask to get each bit
-            Serial.print((UM_array[b].data >> i) & 1);
-        }
-        Serial.println(); // New line after printing bits
+void addSamplesToBuffer(int sampleFreq, int count) {
+  for (int i=0; i<count; i++) {
+    samplingBuffer[samplingPointer] = sampleFreq; // Commit sample (bin number) to memory
+      samplingPointer++;
+      if (samplingPointer >= NUM_SAMPLES) { // Wrap around end of buffer
+        samplingPointer = 0;
       }
-    }
   }
+}
+
+double mapf(double x, double in_min, double in_max, double out_min, double out_max)
+{
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void doesSampleBufferHaveCountOfFreq(int freq, int countMatch) {
+  int count = 0;
+  for (int i=0; i<NUM_SAMPLES; i++) {
+    if (sampleBuffer[i] == freq) count++;
+  }
+  return count >= countMatch;
 }
 
 void initializationPass(int check) {
@@ -497,44 +575,23 @@ bool isSampleBufferValid() {
   return (validCount >= ((NUM_SAMPLES)/3));
 }
 
-// Find the most freqently occuring frequency in the sample buffer and return frequency
-double sampleBufferMax() {
-  uint16_t frequency_hist[1024] = {0}; // Initialize all values to zero
-  uint16_t binNumber;
-  // Populate the frequency histogram
-  for (uint16_t i = 0; i < NUM_SAMPLES; i++) {
-    binNumber = samplingBuffer[i];
-    if (binNumber < 1024) { // Ensure binNumber is within the valid range
-      frequency_hist[binNumber]++;
-    }
-  }
-  int max_bin_count = 0;
-  binNumber = 0;
-  // Find the most frequent bin
-  for (int16_t i = 0; i < 1024; i++) {
-    if (frequency_hist[i] > max_bin_count) {
-      max_bin_count = frequency_hist[i];
-      binNumber = i;
-    }
-  }
-  // Return frequency in Hz based on bin number
-  return (double)binNumber * FFT_BIN_WIDTH; // Adjust factor if needed for your sample rate/FFT size
-}
-
 // Function to transmit the UnderwaterMessage asynchronously
 void transmitMessageAsync(UnderwaterMessage message) {
+  uint16_t encoded = message.encodeHamming(); //Use hamming encoding scheme
+
   transitionOperatingMode(TRANSMIT);
   addToneQueue(MESSAGE_START_FREQ, MESSAGE_BIT_DELAY);
   // Iterate over each bit of the message
   for (int i = 0; i < MESSAGE_LENGTH; i++) {
     // Extract the i-th bit from the message data (starting from LSB)
-    if (message.data & (1 << i)) { // If the i-th bit is 1
+    if (encoded & (1 << i)) { // If the i-th bit is 1
       addToneQueue(MESSAGE_1_FREQ, MESSAGE_BIT_DELAY);
     } else { // If the i-th bit is 0
       addToneQueue(MESSAGE_0_FREQ, MESSAGE_BIT_DELAY);
     }
+    addToneQueue(MESSAGE_START_FREQ, MESSAGE_BIT_DELAY);
   }
-  addToneQueue(MESSAGE_0_FREQ, (int)(MESSAGE_BIT_DELAY)); // End transmission with a stop tone
+  addToneQueue(MESSAGE_END_FREQ, (int)(MESSAGE_BIT_DELAY)); // End transmission with a stop tone
 }
 
 void addToneQueue(int freq, unsigned long delay) {
@@ -547,46 +604,6 @@ void addToneQueue(int freq, unsigned long delay) {
       lastToneStart = millis();
     }
   }
-}
-
-bool validAmplitude(double amp) {
-  return (amp >= MIN_VALID_AMP && amp <= MAX_VALID_AMP);
-}
-
-bool validUnderwaterMessage(UnderwaterMessage message) {
-  uint8_t msg = message.msg;
-  uint8_t id = message.id;
-
-  return (msg >= 0 && msg < 6 && id >= 0 && id < 16);
-}
-
-// Example usage: freqMatchesBounds(1100, 200, 1000) -> TRUE
-// Example usage: freqMatchesBounds(1101, 200, 1000) -> FALSE
-bool freqMatchesBounds(double freq, double bounds, double target) {
-  return abs(freq-(double)target) <= (bounds/2.0);
-}
-
-// Transition state function
-void transitionReceivingState(RECEIVING_STATE newState) {
-  // Serial.print("transitionReceivingState: ");
-  // Serial.println(newState);
-  if (newState == CHECK_START || newState == MESSAGE_ACTIVE) {
-    clearSampleBuffer();
-    sampling = 1; // Begin sampling
-    lastBitChange = millis(); // Start timer
-  } else { //Back to LISTENING
-    clearSampleBuffer();
-    clearBitBuffer();
-    sampling = 0; // NOT sampling
-  }
-  curReceivingState = newState; // Set our current state to the new one
-}
-
-UnderwaterMessage createUnderwaterMessage(uint8_t m, uint8_t i) {
-    UnderwaterMessage message;
-    message.msg = m & 0x7;  // Mask to 3 bits
-    message.id = i & 0xF;   // Mask to 4 bits
-    return message;
 }
 
 

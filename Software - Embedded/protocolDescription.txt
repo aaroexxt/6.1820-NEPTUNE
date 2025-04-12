@@ -3,14 +3,14 @@ MESSAGE PROTOCOL DESCRIPTION
 Total data bits: 16
 Total error correcting bits: 21 (hamming code)
 
-| ID (2 bits) | MSG (8 bits) | 4 bits hamming parity | (total 14 bits)
+| ID (2 bits) | MSG (8 bits) | 4 bits hamming parity | Overall parity bit (for double error detection) | (total 15 bits)
 
 NOTE the hamming bits are spread throughout the message for redundancy. See below:
 
 Example message:
-Position:    14 13 12 11 10 9 8 7 6 5 4 3 2 1
-Bit value:    1  0  1  0  0 1 ? 0 1 0 ? 1 ? ?
-The ?s represent the Hamming bits
+Position:    15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
+Bit value:    1  0  1  0  0  1 ? 0 1 0 ? 1 ? ? ?
+The ?s represent the Hamming parity bits (last bit is overall parity)
 
 
 Transmitter sends 2 bit ID, then message type it's requesting:
@@ -39,3 +39,5 @@ MSG 14: Toggle LEDs (Response 0 = LEDs off, 1 = LEDs on)
 
 MSG 15: Get battery voltage (0 = 2 V, 255 = 4.2V)
 MSG 16: Get battery percent (0 = 0%, 255 = 100%)
+
+MSG 255: Node got a double bit error when receiving, please resend

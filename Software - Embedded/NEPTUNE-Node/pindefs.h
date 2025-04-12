@@ -3,15 +3,16 @@
 
     // Pin connected to neopixels strip
     // THESE ARE PINS ON THE TEENSY
-    #define LED_PIN  14
-    #define LED_COUNT 12
+    #define LED_PIN  2
+    #define LED_COUNT 20
+    #define LED_BRIGHTNESS 100
 
     // Hydrophone output pin
     #define HYDROPHONE_PIN 3 // Which pin is the output?
     
-    // Relay pin
+    // TXRX Relay pin
     #define RELAY_PIN 4
 
-    // Current ID (to be transmitted)
-    uint8_t user_ID = 1;
+    // Current ID (the ID the node listens to)
+    #define NODE_ID 1
 #endif
