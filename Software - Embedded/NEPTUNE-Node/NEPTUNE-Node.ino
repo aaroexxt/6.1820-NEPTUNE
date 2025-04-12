@@ -121,6 +121,9 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
   branch->inputToFilter = new AudioConnection(input, 0, *branch->filter, 0);
   branch->filterToQueue = new AudioConnection(*branch->filter, 0, *branch->queue, 0);
 
+  // Start recording!
+  *branch->queue->begin();
+
   return branch;
 }
 
