@@ -55,15 +55,15 @@ public:
         return um;
     }
 
-    // Encode the 10-bit data into a 14-bit Hamming(14,10) code.
-    // Returns a uint16_t with the 14 code bits in the lower bits.
+    // Encode the 10-bit data into a 14-bit Hamming(14,10) code + 1 extra overall parity bit.
+    // Returns a uint16_t with the 15 total bits in the lower bits.
     uint16_t encodeHamming() const {
         uint16_t data = getData();
         uint16_t encoded = 0;
         int dataPos = 0;
 
         // Place data bits into positions that are not powers of 2 (using 1-indexed positions).
-        // In a 14-bit code, positions 1, 2, 4, and 8 are reserved for parity bits.
+        // In a 14-bit hamming code, positions 1, 2, 4, and 8 are reserved for parity bits.
         for (int i = 1; i <= HAMMING_BITS; i++) {
             if ((i & (i - 1)) != 0) { // i is not a power of 2, so it is a data bit position.
                 if ((data >> dataPos) & 1) {
