@@ -1,8 +1,16 @@
+/*******
+ * TestBandpassFilter
+ * Test of bandpass "branch" structure. Type 's' into console to enable output.
+ * Author: Aaron Becker
+ * 11 April 2025
+ * For 6.1820
+ */
+
 #include <Arduino.h>
 #include <Audio.h>
 #include "pindefs.h"
 
-// === Frequencies + Sample Settings ===
+/************ Frequencies + Sample Settings */
 #define MESSAGE_START_FREQ 20000
 #define MESSAGE_0_FREQ     17500
 #define MESSAGE_1_FREQ     15000
@@ -11,16 +19,17 @@
 #define MIN_VALID_AMP      2000
 #define MAX_VALID_AMP      8000
 
-// === Audio Setup ===
+/************ Audio Setup */
 const int micInput = AUDIO_INPUT_MIC;
 const uint32_t sampleRate = 44100;
 
-// === Audio Objects ===
+/************ Audio Objects */
 AudioInputI2S        audioInput;
 AudioAmplifier       inputAmp;
 AudioControlSGTL5000 audioShield;
+AudioConnection patchCord3(audioInput, 0, inputAmp, 0);
 
-// === BandpassBranch Struct ===
+/************ BANDPASS FILTERS */
 struct BandpassBranch {
   AudioFilterBiquad* filter;
   AudioRecordQueue* queue;
@@ -28,13 +37,12 @@ struct BandpassBranch {
   AudioConnection* filterToQueue;
 };
 
-// === Bandpass Branch Instances ===
+/************ BANDPASS BRANCHES */
 BandpassBranch* branchF_START;
 BandpassBranch* branchF_0;
 BandpassBranch* branchF_1;
 BandpassBranch* branchF_END;
 
-// === Create Bandpass Branch ===
 BandpassBranch* createBandpassBranch(AudioStream& input,
                                      float sampleRate,
                                      float centerFreq,
@@ -55,12 +63,12 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
   branch->filterToQueue = new AudioConnection(*branch->filter, 0, *branch->queue, 0);
 
   // Start recording!
-  *branch->queue->begin();
+  branch->queue->begin();
 
   return branch;
 }
 
-// === Sample Reading ===
+// helper fn to get average amplitude of queue for each biquad filter queue
 double getQueueAverageAmplitude(AudioRecordQueue* queue) {
     float averageAmplitude = 0;
     int samples = 0;
@@ -80,14 +88,13 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
-  AudioMemory(60);
-  inputAmp.gain(2);
+  AudioMemory(500);
 
   // Initialize SGTL5000
-  audioShield.enable();
   audioShield.inputSelect(micInput);
-  audioShield.micGain(90);
+  audioShield.micGain(90); // max mic (analog) gain
   audioShield.volume(1);
+  inputAmp.gain(2); // amplify mic to useful range
   
   // Create branches for each frequency (autostarts queue)
   branchF_START = createBandpassBranch(inputAmp, sampleRate, MESSAGE_START_FREQ, BANDWIDTH_FREQ);

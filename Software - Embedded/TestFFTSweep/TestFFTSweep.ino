@@ -1,3 +1,11 @@
+/*******
+ * TestFFTSweep
+ * Will output frequency sweep of second-sampled FFT data. Open serial plotter, then type 's' into console to enable output.
+ * Author: Aaron Becker
+ * 11 April 2025
+ * For 6.1820
+ */
+
 // Import default libraries
 #include <Arduino.h>
 
@@ -16,13 +24,6 @@ const uint32_t sampleRate = 44100;
 // const uint32_t sampleRate = 192000;
 //const uint32_t sampleRate = 234000;
 
-/************** AUDIO OUTPUT CHAIN (BONE CONDUCTION OUT) */
-AudioPlaySdWav          playBoneconduct;       //xy=87,384
-AudioAmplifier           outputAmp;           //xy=309,351
-AudioOutputI2S           audioOutput;           //xy=573,377
-AudioConnection          patchCord1(playBoneconduct, outputAmp);
-AudioConnection          patchCord2(outputAmp, 0, audioOutput, 0);
-
 /*************** AUDIO INPUT CHAIN (HYDROPHONE IN) */
 const int myInput = AUDIO_INPUT_MIC;
 AudioControlSGTL5000    audioShield;
@@ -32,23 +33,8 @@ AudioAnalyzeFFT1024      inputFFT;      //xy=616,102
 AudioConnection          patchCord3(audioInput, 0, inputAmp, 0);
 AudioConnection          patchCord4(inputAmp, 0, inputFFT, 0);
 
-/************** SAMPLE BUFFER LOGIC / RECEIVING STATE MACHINE
-Each bin is numbered 0-1023 and has a float with its amplitude
-SamplingBuffer is a time-valued array that records bin number
-*/
-#define MESSAGE_BIT_DELAY 250 // ms between bits
-#define NUM_SAMPLES ((int)(((MESSAGE_BIT_DELAY / 10.0) * (86.0 / 100.0)) + 1.0 + 0.9999))
-int16_t samplingBuffer[NUM_SAMPLES]; // BIN indices
-uint16_t samplingPointer = 0; //How many samples have we seen?
-#define MESSAGE_LENGTH UnderwaterMessage::size
-bool bitBuffer[MESSAGE_LENGTH]; // Message sample buffer (1 or 0)
-int bitPointer = 0;
+/************** FFT BINS */
 #define FFT_BIN_WIDTH 43.0664
-#define MESSAGE_START_FREQ 12500 // Hz (1/sec)
-#define MESSAGE_0_FREQ 15000 // Hz
-#define MESSAGE_1_FREQ 17500 // Hz
-#define MESSAGE_LOWPASS_CUTOFF_FREQ 10000
-#define FFT_BIN_CUTOFF (int)(MESSAGE_LOWPASS_CUTOFF_FREQ/FFT_BIN_WIDTH) //Lowpass cutoff
 #define MIN_VALID_AMP 0.05
 #define MAX_VALID_AMP 1.5
 
@@ -66,7 +52,6 @@ void setup() {
     // Get audio shield up and running
     AudioMemory(500);
     inputAmp.gain(2);        // amplify mic to useful range
-    outputAmp.gain(2);
     audioShield.enable();
     audioShield.inputSelect(myInput);
     audioShield.micGain(90);

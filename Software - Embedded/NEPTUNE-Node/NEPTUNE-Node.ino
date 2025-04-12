@@ -1,3 +1,12 @@
+/*******
+ * NEPTUNE-NODE
+ * Master script: sending, recieving, the whole works.
+ * Author: Aaron Becker
+ * 11 April 2025
+ * For 6.1820
+ */
+
+
 // Import default libraries
 #include <Arduino.h>
 
@@ -97,11 +106,7 @@ struct BandpassBranch {
   AudioConnection* filterToQueue;
 };
 
-BandpassBranch* createBandpassBranch(AudioStream& input,
-                                     float sampleRate,
-                                     float centerFreq,
-                                     float bandwidth,
-                                     int stages = 4) {
+BandpassBranch* createBandpassBranch(AudioStream& input, float sampleRate, float centerFreq, float bandwidth, int stages = 4) {
   // Allocate a container for all parts of the branch
   BandpassBranch* branch = new BandpassBranch;
 
@@ -122,7 +127,7 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
   branch->filterToQueue = new AudioConnection(*branch->filter, 0, *branch->queue, 0);
 
   // Start recording!
-  *branch->queue->begin();
+  branch->queue->begin();
 
   return branch;
 }
@@ -274,7 +279,7 @@ void setup() {
     Serial.println("Welcome to NEPTUNE >:)");
     strip.fill(bluishwhite, 0, 12); // light up entire strip, all set up!
     strip.show();
-    delay(100);
+    delay(50);
 }
 
 void loop() {
