@@ -15,7 +15,7 @@
 #define MESSAGE_0_FREQ     17500
 #define MESSAGE_1_FREQ     15000
 #define MESSAGE_END_FREQ   22000
-#define BANDWIDTH_FREQ     500 // Hz
+#define BANDWIDTH_FREQ     250 // Hz
 #define MIN_VALID_AMP      2000
 #define MAX_VALID_AMP      8000
 

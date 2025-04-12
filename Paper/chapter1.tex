@@ -2,6 +2,43 @@
 \chapter{Background}
 %=====================================================
 
+%============ UNORGANIZED WRITING BELOW
+
+The earliest version of the receiver code used a naive implementation: a full 1024-bin FFT that was fed by the recorded data. However, one major with this design decision is the speed of the FFT. Despite the immense computational power of modern hardware, FFTs are limited by the need to collect as many samples as they have bins.
+For a sampling rate of 44100 Hz, a common value for audio and nonspecialized hardware, this means that we are only able to get new data at around 87Hz (since the signal processor gets an entire 128-sample discrete block of audio and processes it in one shot). Given that we want to sample each bit at least two or three times for redundancy, this severly limits our maximum bandwidth.
+
+To improve the bandwidth, we switched to using discrete Biquad filters, which are able to be sampled substantially faster - up to 1000Hz.
+One decision with the Biquad filter is now its coefficients and parameters.
+
+Ultimately, we chose a 4-stage biquad filter based on a frequency-domain analysis. To achieve a band-pass region of ~250Hz (with -60dB of attenuation outside), the 4-stage design works well.
+
+
+LC analysis and such
+
+Additionally, although it is outside the scope of this paper, early in the project we analysed what changes we would make to the hardware, given more time. Two of the biggest issues with the current revision of hardware is a lack of impedance matching, and single-frequency transmit capability only.
+
+We first modelled the manufacturer-provided impedance data with a discrete circuit model, consisting of a series resistor, inductor, and parallel resistor and capacitor:
+
+<insert plot of the model>
+
+After performing a nonlinear optimiziation of the circuit element components in Matlab, we found a representative model for the Aquarian AS-1 hydrophone to be:
+
+<insert tabulated results here>
+
+From this, the raw frequency domain spectrum (without any filtering) is shown when driving with a primary square wave frequency of 20kHz. As shown, the odd harmonics from the square wave are clearly visible (limiting our available bandwidth to transmit).
+
+A future expansion to this work would be implementing functional CDMA (Code Division Multiplexing) for underwater communication, which takes this idea to the best degree possible - utilizing the full bandwidth available. Additionally, getting live measurements of the underwater noise and adapting the bandwidth around this would help even more.
+
+However, because of the effective noise inserted at the 3f, 5f etc harmonics, CDMA will not work with this iteration of the hardware. As a first step towards future iteraitons, we designed a simple inductor for impedance matching + LC filtering network.
+
+<all da plots>
+
+TODO: Neptune state machine diagram, freq domain response of band pass filters, software architecture diagram
+
+%========== SEMI ORGANIZED WRITING BELOW
+
+
+
 \subsection{Introduction}
 
 In recent years, the integration of smart sensing technologies with mobile devices has opened new possibilities for real-time environmental monitoring, personal health tracking, and human-computer interaction in unconventional domains. Among these domains, underwater environments remain one of the most challenging for wireless communication due to the severe attenuation of radio frequency (RF) signals in water, like WiFi. This project aims to bridge that gap by developing a robust underwater acoustic sensor node capable of communicating with an iPhone application written in Swift. By using acousic frequencies (sound) as the transmission medium, and leveraging the iPhone's microphone as a passive receiver, the system bypasses the limitations of conventional wireless technologies and enables a direct, hardware-to-mobile-device communication link beneath the water surface at low cost and simple hardware complexity.
@@ -96,7 +133,7 @@ The Teensy, equipped with an SGTL5000, provides a flexible digital-to-analog (DA
 
 The PAM8904 driver is particularly important for producing the higher voltage swing needed to effectively drive a piezoelectric element in the hydrophone. Although it excels at boosting a low-voltage square wave to as much as a 24\,V peak-to-peak amplitude, it cannot superimpose multiple sinusoids or generate a linear sinusoidal output by itself. This characteristic directly motivates the time-domain FSK approach. If the design required two simultaneous carriers, a more sophisticated driver architecture with multiple waveform generators and linear amplification stages would be needed.
 
-\section{Square Wave Harmonics and the Need for Filtering}
+\section{Square Wave Harmonics and LC Filter Design}
 
 Because the PAM8904 generates a square wave, the transmitted signal includes significant energy at odd harmonics of the fundamental. Mathematically, if a square wave of amplitude \(A\) has fundamental frequency \(f_0\), its Fourier series is
 
@@ -178,8 +215,6 @@ Overall, the design decisions made here reflect a balance between complexity, co
 
 \vspace{0.5cm}
 \begin{thebibliography}{99}
-\bibitem{sklar}
-B. Sklar, \emph{Digital Communications: Fundamentals and Applications}, 2nd ed. Prentice Hall, 2001.
 
 \bibitem{proakis}
 J. G. Proakis, \emph{Digital Communications}, 5th ed. McGraw-Hill, 2007.

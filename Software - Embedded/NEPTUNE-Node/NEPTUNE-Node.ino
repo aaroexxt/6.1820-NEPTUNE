@@ -95,7 +95,7 @@ unsigned long lastBitStatisticsTime = 0;
 #define MAX_VALID_AMP 8000
 #define THRESHOLD_SAMPLES_MIN_DETECT 2
 #define THRESHOLD_SAMPLES_VALID (int)(NUM_SAMPLES/3)
-#define BANDWIDTH_FREQ 500 // Width of bounds around center frequency for each bandpass filter
+#define BANDWIDTH_FREQ 250 // Width of bounds around center frequency for each bandpass filter
 
 /********************* BANDPASS FILTERS */
 struct BandpassBranch {
