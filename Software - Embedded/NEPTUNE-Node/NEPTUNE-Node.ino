@@ -120,7 +120,7 @@ OPERATING_MODE mode = RECEIVE;
 
 /****************** FUNCTION PROTOTYPES */
 // Forward declarations to help Arduino compiler
-
+bool debugMode = false;
 void transitionReceivingState(RECEIVING_STATE newState);
 void transitionOperatingMode(OPERATING_MODE newMode);
 int countTonePresentSamples(AudioRecordQueue* queue);
@@ -351,7 +351,7 @@ void loop() {
       } else {
           Serial.println("Invalid format. Use: a <freq> <amp>");
       }
-    } else if (input.startsWith("d ")) {
+    } else if (input.startsWith("m ")) {
       int space1 = input.indexOf(' ');
       int space2 = input.indexOf(' ', space1 + 1);
       if (space2 > 0) {
@@ -361,7 +361,7 @@ void loop() {
         // Pass to helper fn
         measureFrequencyBinThresholds(sampleDurationMs, thresholdMultFactor);
       } else {
-        Serial.println("Invalid format. Use: d <sampleDurationMs> <thresholdMultFactor>");
+        Serial.println("Invalid format. Use: m <sampleDurationMs> <thresholdMultFactor>");
       }
     } else if (input.startsWith("c ")) {
       int space1 = input.indexOf(' ');
@@ -383,8 +383,12 @@ void loop() {
       } else {
         Serial.println("Invalid format. Use c <simulatedID> <simulatedMsg>");
       }
+    } else if (input.equalsIgnoreCase("d")) {
+      debugMode = !debugMode;
+      Serial.print("DebugMode State: ");
+      Serial.println(debugMode ? "on" : "off");
     } else {
-      Serial.println("NEPTUNE CLI Help\n--------------\nThreshold Setting: a <frequency> <amplitude>\nRemeasure Thresholds: d <sampleDurationMs> <thresholdMultFactor>\nSimulate Message: c <simID> <simMSG>\n--------------");
+      Serial.println("NEPTUNE CLI Help\n--------------\nThreshold Setting: a <frequency> <amplitude>\nRemeasure Thresholds: m <sampleDurationMs> <thresholdMultFactor>\nSimulate Message: c <simID> <simMSG>\nToggle Debug Mode: d\n--------------");
     }
   }
 
@@ -444,10 +448,12 @@ void loop() {
   int F1Samples = countTonePresentSamples(branchF_1);
   int endSamples = countTonePresentSamples(branchF_END);
   
-  if (startSamples > 100) {Serial.print("S"); Serial.println(startSamples);}
-  if (F0Samples > 100) {Serial.print("0"); Serial.println(F0Samples);}
-  if (F1Samples > 100) {Serial.print("1"); Serial.println(F1Samples);}
-  if (endSamples > 100) {Serial.print("E"); Serial.println(endSamples);}
+  if (debugMode) {
+    if (startSamples > 100) {Serial.print("S"); Serial.println(startSamples);}
+    if (F0Samples > 100) {Serial.print("0"); Serial.println(F0Samples);}
+    if (F1Samples > 100) {Serial.print("1"); Serial.println(F1Samples);}
+    if (endSamples > 100) {Serial.print("E"); Serial.println(endSamples);}
+  }
 
   while(millis() - lastLoopTime < 10) {} // Accumulate 10ms of samples between iters
   lastLoopTime = millis();
