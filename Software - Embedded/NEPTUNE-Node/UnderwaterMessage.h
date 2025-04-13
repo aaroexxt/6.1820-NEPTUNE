@@ -1,4 +1,6 @@
 // UnderwaterMessage.h
+// Author: Aaron Becker 4/11/25
+
 #ifndef UNDERWATER_MESSAGE_H
 #define UNDERWATER_MESSAGE_H
 

@@ -10,6 +10,12 @@
 #include <Audio.h>
 #include "pindefs.h"
 
+//Forward decs
+struct BandpassBranch; // Forward declaration (optional but clean)
+unsigned long sumFilterAmplitudes(BandpassBranch* branch, unsigned long* sampleCounter);
+double getQueueAverageAmplitude(AudioRecordQueue* queue, unsigned long* sampleCounter = nullptr);
+
+
 /************ Frequencies + Sample Settings */
 #define CENTER_FREQ 8000
 #define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
@@ -107,6 +113,32 @@ BandpassBranch* createBandpassBranch(AudioStream& input,
   return branch;
 }
 
+// helper fn to sum amplitude of queue for each biquad filter queue
+unsigned long sumFilterAmplitudes(BandpassBranch* branch, unsigned long* sampleCounter) {
+  unsigned long sumAmplitude = 0;
+  int samples = 0;
+
+  // extract from struct
+  AudioRecordQueue* queue = branch->queue;
+
+  while (queue->available() > 0) {
+      int16_t* data = queue->readBuffer();
+      if (!data) continue;
+      for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+          sumAmplitude += abs(data[i]);
+          samples++;
+      }
+      queue->freeBuffer();
+  }
+
+  // Increment the corresponding counter (if provided)
+  if (sampleCounter != nullptr) {
+      *sampleCounter += samples;
+  }
+
+  return sumAmplitude;
+}
+
 // helper fn to get average amplitude of queue for each biquad filter queue
 double getQueueAverageAmplitude(AudioRecordQueue* queue, unsigned long* sampleCounter) {
   double averageAmplitude = 0;
@@ -188,25 +220,24 @@ void loop() {
       const unsigned long sampleDurationMs = 10000;
       const unsigned long startTime = millis();
 
-      double totalStart = 0, total0 = 0, total1 = 0, totalEnd = 0;
-      unsigned long samples = 0;
+      unsigned long totalStart = 0, total0 = 0, total1 = 0, totalEnd = 0;
+      unsigned long samplesStart = 0, samples0 = 0, samples1 = 0, samplesEnd = 0;
 
+      // Capture samples
       while (millis() - startTime < sampleDurationMs) {
-        totalStart += getQueueAverageAmplitude(branchF_START->queue, nullptr);
-        total0     += getQueueAverageAmplitude(branchF_0->queue,    nullptr);
-        total1     += getQueueAverageAmplitude(branchF_1->queue,    nullptr);
-        totalEnd   += getQueueAverageAmplitude(branchF_END->queue,  nullptr);
+        totalStart += sumFilterAmplitudes(branchF_START, &samplesStart);
+        total0 += sumFilterAmplitudes(branchF_0, &samples0);
+        total1 += sumFilterAmplitudes(branchF_1, &samples1);
+        totalEnd += sumFilterAmplitudes(branchF_END, &samplesEnd);
 
-        samples++;
-
-        delay(10);
+        delay(10); // match main loop delay
       }
 
       // Compute average amplitudes
-      double avgStart = (samples > 0) ? totalStart / (double)samples : 0;
-      double avg0     = (samples > 0)     ? total0     / (double)samples     : 0;
-      double avg1     = (samples > 0)     ? total1     / (double)samples     : 0;
-      double avgEnd   = (samples > 0)   ? totalEnd   / (double)samples   : 0;
+      double avgStart = (samplesStart > 0) ? (double)totalStart / (double)samplesStart : 0;
+      double avg0 = (samples0 > 0) ? (double)total0 / (double)samples0 : 0;
+      double avg1 = (samples1 > 0) ? (double)total1 / (double)samples1 : 0;
+      double avgEnd = (samplesEnd > 0) ? totalEnd / (double)samplesEnd : 0;
 
       // Set thresholds
       numThresholds = 4;
@@ -232,7 +263,7 @@ void loop() {
         Serial.print(" Hz → ");
         Serial.println(ampThresholds[i].amp);
       }
-      delay(5000);
+      delay(1000);
 } else if (input.startsWith("a ")) {
         float freq = 0, amp = 0;
         int space1 = input.indexOf(' ');

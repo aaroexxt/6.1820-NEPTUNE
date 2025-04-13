@@ -17,9 +17,12 @@
 #include <Adafruit_BNO055.h> // Accel, Gyro, Mag, Temp
 #include <Adafruit_NeoPixel.h> // LEDs
 
-// Import default pindefs
+// Import all custom libraries
 #include "pindefs.h" // Pin definitions
 #include "UnderwaterMessage.h"
+#include "Protocol.h"
+#include "FreqThreshold.h"
+#include "BandpassBranch.h"
 
 /******* ADDITIONAL DEVICE SETUP */
 
@@ -58,12 +61,6 @@ unsigned long lastBNOReadTime = 0;
 const int micInput = AUDIO_INPUT_MIC;
 const int chipSelect = 10;
 
-// SELECT SAMPLE RATE
-const uint32_t sampleRate = 44100;
-//const uint32_t sampleRate = 96000;
-// const uint32_t sampleRate = 192000;
-//const uint32_t sampleRate = 234000;
-
 /*************** AUDIO INPUT CHAIN (HYDROPHONE IN) */
 AudioControlSGTL5000    audioShield;
 AudioInputI2S            audioInput;           //xy=180,111
@@ -74,9 +71,6 @@ AudioConnection          patchCord3(audioInput, 0, inputAmp, 0);
 We use 4 bandpass filters around each frequency of interest
 Each bandpass filter is a biquad filter with multiple cascaded stages to narrow the filter effective passband.
 */
-#define MESSAGE_BIT_DELAY 500 // ms between bits
-// in theory, we are getting 44100 samples out of bandpass per sec
-#define NUM_SAMPLES (int)((MESSAGE_BIT_DELAY / 1000.0) * sampleRate)
 int16_t samplingBuffer[NUM_SAMPLES]; // BIN indices
 uint16_t samplingPointer = 0; //How many samples have we seen?
 #define MESSAGE_LENGTH UnderwaterMessage::size
@@ -86,100 +80,13 @@ int bitsReceived = 0; // Trackers for bits and bit errors received (for tx/rx st
 int bitsTransmitted = 0;
 int errorsReceived = 0;
 unsigned long lastBitStatisticsTime = 0;
-#define CENTER_FREQ 8000
-#define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
-#define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
-#define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
-#define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
-
-#define THRESHOLD_SAMPLES_MIN_DETECT (int)(NUM_SAMPLES/25)
-#define THRESHOLD_SAMPLES_VALID (int)(NUM_SAMPLES/3)
 #define BANDWIDTH_FREQ 150 // Width of bounds around center frequency for each bandpass filter
 
-/********************* BANDPASS FILTERS */
-struct BandpassBranch {
-  // Keep track of the biquad filter (multi-stage used), the audio queue and audio connection objects
-  AudioFilterBiquad* filter;
-  AudioRecordQueue* queue;
-  AudioConnection* inputToFilter;
-  AudioConnection* filterToQueue;
-  float centerFrequency;
-  float bandwidth;
-};
-
-BandpassBranch* createBandpassBranch(AudioStream& input, float sampleRate, float centerFreq, float bandwidth, int stages = 4) {
-  // Allocate a container for all parts of the branch
-  BandpassBranch* branch = new BandpassBranch;
-  // Assign the cFreq and bandwidth
-  branch->centerFrequency = centerFreq;
-  branch->bandwidth = bandwidth;
-
-  // Allocate audio components
-  branch->filter = new AudioFilterBiquad();
-  branch->queue = new AudioRecordQueue();
-
-  // Compute quality factor for each stage
-  float Q_total = centerFreq / bandwidth;
-  float Q_stage = Q_total / sqrt((float)stages);
-
-  for (int i = 0; i < stages; i++) {
-    branch->filter->setBandpass(i, centerFreq, Q_stage);
-  }
-
-  // Hook up audio connections
-  branch->inputToFilter = new AudioConnection(input, 0, *branch->filter, 0);
-  branch->filterToQueue = new AudioConnection(*branch->filter, 0, *branch->queue, 0);
-
-  // Start recording!
-  branch->queue->begin();
-
-  return branch;
-}
-
-// Create bandpass filters for each branch
+// Instantiate bandpass filters for each branch
 BandpassBranch* branchF_START;
 BandpassBranch* branchF_0;
 BandpassBranch* branchF_1;
 BandpassBranch* branchF_END;
-
-#define MAX_THRESHOLDS 10
-
-struct FreqThreshold {
-  float freq;
-  float amp;
-};
-
-FreqThreshold ampThresholds[MAX_THRESHOLDS] = {
-  // freq, amplitude thresh (from TestBandpassFiltering)
-  {MESSAGE_0_FREQ, 3250}, // 7.5 kHz
-  {MESSAGE_START_FREQ, 3500}, // 8 kHz
-  {MESSAGE_1_FREQ, 3000}, // 8.5 kHz
-  {MESSAGE_END_FREQ, 2500} // 9 kHz
-};
-int numThresholds = 4;
-
-// Returns amplitude threshold for a given frequency (Hz)
-int16_t getAmplitudeThreshold(float freqHz) {
-  if (numThresholds == 0) return 1000;
-
-  // Clamp to bounds
-  if (freqHz <= ampThresholds[0].freq) return ampThresholds[0].amp;
-  if (freqHz >= ampThresholds[numThresholds - 1].freq) return ampThresholds[numThresholds - 1].amp;
-
-  // Find interval
-  for (int i = 0; i < numThresholds - 1; i++) {
-      float f1 = ampThresholds[i].freq;
-      float f2 = ampThresholds[i + 1].freq;
-      if (freqHz >= f1 && freqHz <= f2) {
-          float a1 = ampThresholds[i].amp;
-          float a2 = ampThresholds[i + 1].amp;
-          float t = (freqHz - f1) / (f2 - f1);
-          return (int16_t)(a1 * (1 - t) + a2 * t);
-      }
-  }
-
-  return 1000;
-}
 
 /**************** STATE MACHINE */
 
@@ -222,7 +129,6 @@ void clearBitBuffer();
 bool isSampleBufferValid();
 void transmitMessageAsync(UnderwaterMessage message);
 void addToneQueue(int freq, unsigned long delay);
-
 
 void setup() {
     Serial.begin(115200);
@@ -323,7 +229,9 @@ void setup() {
     Serial.println("Welcome to NEPTUNE >:)");
     strip.fill(bluishwhite, 0, 12); // light up entire strip, all set up!
     strip.show();
-    delay(50);
+
+    // Get frequency bin thresholds
+    measureFrequencyBinThresholds(FREQ_MEASURE_DURATION_MS, THRESHOLD_MULT_FACTOR);
 }
 
 unsigned long lastLoopTime = 0;
@@ -397,9 +305,11 @@ void loop() {
     }
   }
 
+  /******************* SERIAL COMMAND HANDLER */
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
     input.trim();
+    // a command -> set amplitude threshold
     if (input.startsWith("a ")) {
       float freq = 0, amp = 0;
       int space1 = input.indexOf(' ');
@@ -441,11 +351,45 @@ void loop() {
       } else {
           Serial.println("Invalid format. Use: a <freq> <amp>");
       }
+    } else if (input.startsWith("d ")) {
+      int space1 = input.indexOf(' ');
+      int space2 = input.indexOf(' ', space1 + 1);
+      if (space2 > 0) {
+        unsigned long sampleDurationMs = (unsigned long)input.substring(space1 + 1, space2).toInt();
+        float thresholdMultFactor = input.substring(space2 + 1).toFloat();
+        
+        // Pass to helper fn
+        measureFrequencyBinThresholds(sampleDurationMs, thresholdMultFactor);
+      } else {
+        Serial.println("Invalid format. Use: d <sampleDurationMs> <thresholdMultFactor>");
+      }
+    } else if (input.startsWith("c ")) {
+      int space1 = input.indexOf(' ');
+      int space2 = input.indexOf(' ', space1 + 1);
+      if (space2 > 0) {
+        uint16_t id = (uint16_t)input.substring(space1 + 1, space2).toInt();
+        uint16_t msg = (uint16_t)input.substring(space2 + 1).toFloat();
+        
+        UnderwaterMessage um(id, msg);
+        uint16_t encoded = um.encodeHamming();
+
+        // copy sim message bits into bitbuffer
+        for (int i = 0; i < MESSAGE_LENGTH; i++) {
+          bitBuffer[i] = (encoded >> i) & 0x01;
+        }
+        
+        // Switch to decoding state
+        transitionReceivingState(DECODE_MESSAGE);
+      } else {
+        Serial.println("Invalid format. Use c <simulatedID> <simulatedMsg>");
+      }
+    } else {
+      Serial.println("NEPTUNE CLI Help\n--------------\nThreshold Setting: a <frequency> <amplitude>\nRemeasure Thresholds: d <sampleDurationMs> <thresholdMultFactor>\nSimulate Message: c <simID> <simMSG>\n--------------");
     }
   }
 
   /************ IMU SENSOR */
-  if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS && false) {
+  if (millis()-lastBNOReadTime >= BNO055_SAMPLERATE_DELAY_MS) {
     bno.getEvent(&bno_orientationData, Adafruit_BNO055::VECTOR_EULER);
     bno.getEvent(&bno_angVelocityData, Adafruit_BNO055::VECTOR_GYROSCOPE);
     bno.getEvent(&bno_magnetometerData, Adafruit_BNO055::VECTOR_MAGNETOMETER);
@@ -495,17 +439,17 @@ void loop() {
   /**************** TONE RECEIVING */
   // Input samples into samplebuffer. CountTonePresentSamples will free queue memory as necessary
   // 2nd argument is threshold, input values are -32768 to 32767 so this is sort of arbitrary
-  int startSamples = countTonePresentSamples(branchF_START->queue, branchF_START->centerFrequency);
-  int F0Samples = countTonePresentSamples(branchF_0->queue, branchF_0->centerFrequency);
-  int F1Samples = countTonePresentSamples(branchF_1->queue, branchF_1->centerFrequency);
-  int endSamples = countTonePresentSamples(branchF_END->queue, branchF_END->centerFrequency);
+  int startSamples = countTonePresentSamples(branchF_START);
+  int F0Samples = countTonePresentSamples(branchF_0);
+  int F1Samples = countTonePresentSamples(branchF_1);
+  int endSamples = countTonePresentSamples(branchF_END);
   
   if (startSamples > 100) {Serial.print("S"); Serial.println(startSamples);}
   if (F0Samples > 100) {Serial.print("0"); Serial.println(F0Samples);}
   if (F1Samples > 100) {Serial.print("1"); Serial.println(F1Samples);}
   if (endSamples > 100) {Serial.print("E"); Serial.println(endSamples);}
 
-  while(millis() - lastLoopTime < 10) {}
+  while(millis() - lastLoopTime < 10) {} // Accumulate 10ms of samples between iters
   lastLoopTime = millis();
 
   // Then add samples to sampling buffer
@@ -577,7 +521,7 @@ void loop() {
 
     // Bit of an edge case: the double error could have been in the ID field. But if that's true, the message is simply invalid. For now we will send back a 255 error
     if (!doubleError) {
-      Serial.printf("Got ID: |0x%.2x|, MSG: |0x%.8x|\n", decoded.getID(), decoded.getMsg());
+      Serial.printf("[MSG] RX ID: |0x%.2x|, MSG: |0x%.8x|\n", decoded.getID(), decoded.getMsg());
       if (decoded.getID() == NODE_ID) { // Only respond to messages to our ID
         response.id = NODE_ID; // Response ID is our node id
         switch (decoded.getMsg()) {
@@ -657,6 +601,7 @@ void loop() {
 }
 
 // Transition state function
+// Handles all state-edge transitions
 void transitionReceivingState(RECEIVING_STATE newState) {
   if (newState >= 2) {
     Serial.print("transitionReceivingState: ");
@@ -676,24 +621,54 @@ void transitionReceivingState(RECEIVING_STATE newState) {
   curReceivingState = newState; // Set our current state to the new one
 }
 
-int countTonePresentSamples(AudioRecordQueue* queue, float centerFrequency) {
-  int matches = 0;
-  while (queue->available() > 0) {
-    int16_t* data = queue->readBuffer();
+void measureFrequencyBinThresholds(unsigned long sampleDurationMs, float thresholdMultFactor) {
+  // Init counters
+  unsigned long totalStart = 0, total0 = 0, total1 = 0, totalEnd = 0;
+  unsigned long samplesStart = 0, samples0 = 0, samples1 = 0, samplesEnd = 0;
 
-    if (!data) continue;
+  const unsigned long startTime = millis();
 
-    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-      int16_t sample = abs(data[i]);
-      if (sample >= getAmplitudeThreshold(centerFrequency)) matches++;
-    }
+  // Capture samples
+  while (millis() - startTime < sampleDurationMs) {
+    totalStart += sumFilterAmplitudes(branchF_START, &samplesStart);
+    total0 += sumFilterAmplitudes(branchF_0, &samples0);
+    total1 += sumFilterAmplitudes(branchF_1, &samples1);
+    totalEnd += sumFilterAmplitudes(branchF_END, &samplesEnd);
 
-    queue->freeBuffer();  // <- No argument needed, frees the last buffer
+    delay(10); // match main loop delay
   }
 
-  return matches;
-}
+  // Compute average amplitudes
+  float avgStart = (samplesStart > 0) ? (float)totalStart / (float)samplesStart : 0;
+  float avg0 = (samples0 > 0) ? (float)total0 / (float)samples0 : 0;
+  float avg1 = (samples1 > 0) ? (float)total1 / (float)samples1 : 0;
+  float avgEnd = (samplesEnd > 0) ? (float)totalEnd / (float)samplesEnd : 0;
 
+  // Set thresholds
+  numThresholds = 4;
+  ampThresholds[0] = {MESSAGE_0_FREQ, avg0 * thresholdMultFactor};
+  ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * thresholdMultFactor};
+  ampThresholds[2] = {MESSAGE_1_FREQ, avg1 * thresholdMultFactor};
+  ampThresholds[3] = {MESSAGE_END_FREQ, avgEnd * thresholdMultFactor};
+
+  // Sort thresholds
+  for (int i = 0; i < numThresholds - 1; i++) {
+    for (int j = i + 1; j < numThresholds; j++) {
+      if (ampThresholds[i].freq > ampThresholds[j].freq) {
+        FreqThreshold temp = ampThresholds[i];
+        ampThresholds[i] = ampThresholds[j];
+        ampThresholds[j] = temp;
+      }
+    }
+  }
+
+  Serial.println("New thresholds set:");
+  for (int i = 0; i < numThresholds; i++) {
+    Serial.print(ampThresholds[i].freq);
+    Serial.print(" Hz -> ");
+    Serial.println(ampThresholds[i].amp);
+  }
+}
 
 void addSamplesToBuffer(int sampleFreq, int count) {
   //Serial.print(sampleFreq); Serial.print("Hz @ c="); Serial.println(count);
@@ -773,6 +748,8 @@ bool isSampleBufferValid() {
 
 // Function to transmit the UnderwaterMessage asynchronously
 void transmitMessageAsync(UnderwaterMessage message) {
+  Serial.printf("[MSG] TX ID: |0x%.2x|, MSG: |0x%.8x|\n", message.getID(), message.getMsg());
+
   uint16_t encoded = message.encodeHamming(); //Use hamming encoding scheme
 
   transitionOperatingMode(TRANSMIT);
