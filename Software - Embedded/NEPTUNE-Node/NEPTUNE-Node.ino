@@ -238,7 +238,7 @@ unsigned long lastLoopTime = 0;
 
 void loop() {
   /*********** LEDS */
-  if (millis() > lastLEDUpdateTime && false) {
+  if (millis() > lastLEDUpdateTime) {
     uint32_t color = strip.Color(counter, 0, 0, 30); // r g b w
     if (dir) {
       counter++;
