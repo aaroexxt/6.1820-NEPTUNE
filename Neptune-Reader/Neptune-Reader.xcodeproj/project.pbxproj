@@ -292,6 +292,7 @@
 				DEVELOPMENT_TEAM = 3QGZPSUHSV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Neptune-Reader/Info.plist";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "this app needs the microphone to read nodes";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -320,6 +321,7 @@
 				DEVELOPMENT_TEAM = 3QGZPSUHSV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Neptune-Reader/Info.plist";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "this app needs the microphone to read nodes";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
