@@ -15,6 +15,7 @@ class SettingsViewController: UIViewController {
     @IBOutlet weak var endFreqField: UITextField!
     @IBOutlet weak var startFreqField: UITextField!
     @IBOutlet weak var fftSizeField: UITextField!
+    @IBOutlet weak var volumePercentageField: UITextField!
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -36,12 +37,16 @@ class SettingsViewController: UIViewController {
         fftSizeField.returnKeyType = .done
         fftSizeField.delegate = self
         
+        volumePercentageField.returnKeyType = .done
+        volumePercentageField.delegate = self
+        
         bitDurationField.text = String(Int(frequencyDuration * 1000))
         highFreqField.text = String(Int(highFrequency))
         lowFreqField.text = String(Int(lowFrequency))
         startFreqField.text = String(Int(startFrequency))
         endFreqField.text = String(Int(endFrequency))
         fftSizeField.text = String(Int(fftSize))
+        volumePercentageField.text = String(Int(volumePercentage))
     }
 }
 
@@ -77,6 +82,10 @@ extension SettingsViewController: UITextFieldDelegate {
             else if textField == fftSizeField {
                 fftSize = Int(doubleValue)
                 print("FFT size updated to: \(fftSize)")
+            }
+            else if textField == volumePercentageField {
+                volumePercentage = Int(doubleValue)
+                print("Volume percentage updated to: \(volumePercentage)")
             }
         
         return true

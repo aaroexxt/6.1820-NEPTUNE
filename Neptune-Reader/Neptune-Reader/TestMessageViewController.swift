@@ -23,6 +23,8 @@ class TestMessageViewController: UIViewController {
     var sourceNode: AVAudioSourceNode!
     var audioWrapper: AudioWrapper!
     
+    var currentSendingLoopID: UUID?
+    
     var state = readerState.IDLE
     
     override func viewDidLoad() {
@@ -37,17 +39,17 @@ class TestMessageViewController: UIViewController {
     }
     
     @IBAction func sendTestMessageButtonTapped(_ sender: UIButton) {
-        if(self.state == readerState.IDLE) {
-            print("sending message on loop...")
-            sender.setTitle("Pause Sending", for: .normal)
-            self.state = readerState.SENDING
-            startSendingLoop()
-        }
-        else {
-            print("pausing...")
-            self.state = readerState.IDLE
-            sender.setTitle("Start Sending", for: .normal)
-        }
+        if self.state == readerState.IDLE {
+                print("sending message on loop...")
+                sender.setTitle("Pause Sending", for: .normal)
+                self.state = readerState.SENDING
+                startSendingLoop()
+            } else {
+                print("pausing...")
+                self.state = readerState.IDLE
+                self.currentSendingLoopID = nil // cancel current loop
+                sender.setTitle("Start Sending", for: .normal)
+            }
     }
     
     @IBAction func resetCountersButtonTapped(_ sender: UIButton) {
@@ -57,6 +59,22 @@ class TestMessageViewController: UIViewController {
         totalBitsSentLabel.text = String(totalBitsSent)
         totalPacketsSentLabel.text = String(totalPacketsSent)
     }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        
+        // stop sending loop
+        self.state = readerState.IDLE
+        self.currentSendingLoopID = nil
+        
+        // stop any tones playing
+        stopTone(audioWrapper: self.audioWrapper, speakerAudioEngine: self.speakerAudioEngine)
+        
+        // stop engine
+        speakerAudioEngine.stop()
+        speakerAudioEngine.reset()
+    }
+
     
 }
 
@@ -95,16 +113,27 @@ extension TestMessageViewController: UITextFieldDelegate {
     }
     
     func startSendingLoop() {
+        let newLoopID = UUID()
+        currentSendingLoopID = newLoopID
         let listeningTimeout = 15 * frequencyDuration * 3
-        if(self.state == readerState.SENDING) {
+        
+        func loop() {
+            guard self.state == readerState.SENDING, self.currentSendingLoopID == newLoopID else {
+                print("Sending loop cancelled or state changed.")
+                return
+            }
+            
             print("sending loop iteration")
             DispatchQueue.global(qos: .userInitiated).async {
                 totalPacketsSent += 1
                 sendMessage(msgToSend: self.msgToSend, speakerAudioEngine: self.speakerAudioEngine, audioWrapper: self.audioWrapper, uiLabel: self.totalBitsSentLabel, uiLabelPackets: self.totalPacketsSentLabel)
                 Thread.sleep(forTimeInterval: listeningTimeout)
-                self.startSendingLoop()
+                loop()
             }
         }
+        
+        loop()
     }
+
 }
 

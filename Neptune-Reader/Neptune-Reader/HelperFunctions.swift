@@ -15,6 +15,7 @@ import CoreMotion
  #### IMPORTANT VARIABLES ####
  */
 
+
 var startFrequency: Double = 10000.0
 var endFrequency: Double = 12000.0
 var lowFrequency: Double = 9000.0
@@ -28,6 +29,10 @@ let sampleRate: Double = 44100.0
 
 var totalPacketsSent = 0
 var totalBitsSent = 0
+
+var volumePercentage = 30
+
+let randomModeSendsStartBits = true // change this to false to get rid of start bits between each high/low bit
 
 let dataRequestMessageBits: [String: String] = [
     "Gyro X": "00000001",
@@ -211,7 +216,7 @@ func playTone(freq: Double, speakerAudioEngine: AVAudioEngine, audioWrapper: Aud
         let thetaIncrement = 2.0 * Double.pi * freq / sampleRate
 
         for frame in 0..<Int(frameCount) {
-            let amplitude: Float32 = 15.0 // max 1.0 (15 for very loud)
+            let amplitude: Float32 = (Float(volumePercentage) / 100.0)*10.0 // max 1.0 (15 for very loud)
             let sampleVal = amplitude * Float32(sin(theta))
             theta += thetaIncrement
             if theta > 2.0 * Double.pi {
