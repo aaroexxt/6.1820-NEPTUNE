@@ -11,7 +11,7 @@
 
 // User-configurable
 #define FREQ_MEASURE_DURATION_MS 5000
-#define THRESHOLD_MULT_FACTOR 1.2
+#define THRESHOLD_MULT_FACTOR 3.5
 
 #define MAX_THRESHOLDS 10
 
