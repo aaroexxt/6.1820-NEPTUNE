@@ -241,10 +241,10 @@ void loop() {
 
       // Set thresholds
       numThresholds = 4;
-      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 1.2};
-      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 1.2};
-      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 1.2};
-      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 1.2};
+      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 1.3};
+      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 1.3};
+      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 1.3};
+      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 1.3};
 
       // Sort thresholds
       for (int i = 0; i < numThresholds - 1; i++) {
