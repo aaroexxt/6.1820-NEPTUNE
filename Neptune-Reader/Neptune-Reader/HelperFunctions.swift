@@ -26,6 +26,9 @@ let lenianceValue: Float = 20.0
 var fftSize = 512  // 1024
 let sampleRate: Double = 44100.0
 
+var totalPacketsSent = 0
+var totalBitsSent = 0
+
 let dataRequestMessageBits: [String: String] = [
     "Gyro X": "00000001",
     "Gyro Y": "00000010",
@@ -149,7 +152,7 @@ class AudioWrapper {
 /*
  Given a Message, construct its order of bits and play its tones on the speaker
  */
-func sendMessage(msgToSend: Message, speakerAudioEngine: AVAudioEngine, audioWrapper: AudioWrapper) {
+func sendMessage(msgToSend: Message, speakerAudioEngine: AVAudioEngine, audioWrapper: AudioWrapper, uiLabel: UILabel? = nil, uiLabelPackets: UILabel? = nil) {
     Thread.sleep(forTimeInterval: frequencyDuration) // short delay so it doesn't overlap with the message its responding to
     
     // creating ordered bits
@@ -173,10 +176,25 @@ func sendMessage(msgToSend: Message, speakerAudioEngine: AVAudioEngine, audioWra
         playTone(freq: freqToPlay, speakerAudioEngine: speakerAudioEngine, audioWrapper: audioWrapper)
         Thread.sleep(forTimeInterval: frequencyDuration)
         stopTone(audioWrapper: audioWrapper, speakerAudioEngine: speakerAudioEngine)
+        
+        totalBitsSent += 1
+        if let uiLabel = uiLabel {
+            print("total bits sent: ", totalBitsSent)
+                    DispatchQueue.main.async {
+                        uiLabel.text = String(totalBitsSent)
+                    }
+        }
     }
     playTone(freq: endFrequency, speakerAudioEngine: speakerAudioEngine, audioWrapper: audioWrapper)
     Thread.sleep(forTimeInterval: frequencyDuration)
     stopTone(audioWrapper: audioWrapper, speakerAudioEngine: speakerAudioEngine)
+    
+    if let uiLabel = uiLabelPackets {
+        print("total packets sent: ", totalPacketsSent)
+                DispatchQueue.main.async {
+                    uiLabel.text = String(totalPacketsSent)
+                }
+    }
 }
 
 /*

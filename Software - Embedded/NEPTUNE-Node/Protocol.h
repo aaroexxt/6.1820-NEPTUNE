@@ -15,20 +15,25 @@ const uint32_t sampleRate = 44100;
 // const uint32_t sampleRate = 192000;
 //const uint32_t sampleRate = 234000;
 
-#define MESSAGE_BIT_DELAY 500 // ms between bits
+#define MESSAGE_BIT_DELAY 130 // ms between bits
 
 // in theory, we are getting 44100 samples out of bandpass per sec
 #define NUM_SAMPLES (int)((MESSAGE_BIT_DELAY / 1000.0) * sampleRate)
 
 // Center frequency is the primary communication frequency
-#define CENTER_FREQ 8000
+// #define CENTER_FREQ 8000
+// #define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
+// #define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
+// #define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
+// #define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
+#define CENTER_FREQ 10000
 #define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
-#define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
-#define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
-#define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
+#define MESSAGE_0_FREQ 9000 // Hz
+#define MESSAGE_1_FREQ 11000 // Hz
+#define MESSAGE_END_FREQ 12000 // Hz (1/sec)
 
 // Thresholds in sample buffer length
-#define THRESHOLD_SAMPLES_MIN_DETECT (int)(NUM_SAMPLES/25)
+#define THRESHOLD_SAMPLES_MIN_DETECT (int)(NUM_SAMPLES/10)
 #define THRESHOLD_SAMPLES_VALID (int)(NUM_SAMPLES/3)
 
 #endif // PROTOCOL_H

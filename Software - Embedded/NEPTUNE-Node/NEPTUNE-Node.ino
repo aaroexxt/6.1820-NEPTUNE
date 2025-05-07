@@ -404,7 +404,7 @@ void loop() {
 
   /**************** BIT STATISTICS */
   if (millis() - lastBitStatisticsTime >= 1000) {
-    Serial.printf("[BIT STATISTICS] Tx: %d, Rx: %d, ErrRx: %d, %%ErrRx:%.3f\n", bitsTransmitted, bitsReceived, errorsReceived, (float)errorsReceived/(float)bitsReceived);
+    Serial.printf("[BIT STATISTICS] Tx: %d, RxTot: %d, ErrRx: %d, GoodRx: %d, %%ErrRx:%.3f\n", bitsTransmitted, bitsReceived + errorsReceived, errorsReceived, bitsReceived, bitsReceived == 0 ? 0 : (float)errorsReceived/(float)bitsReceived*100.0);
     lastBitStatisticsTime = millis();
 
     if (curReceivingState == LISTENING) clearSampleBuffer(); // TODO note this line
@@ -473,7 +473,8 @@ void loop() {
       transitionReceivingState(CHECK_START);
     }
 
-  } else if ((curReceivingState == CHECK_START || curReceivingState == MESSAGE_GET_BIT) && (doesSampleBufferHaveCountOfFreq(MESSAGE_END_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || bitPointer >= MESSAGE_LENGTH)) { // We got the end message bit OR bit buffer is full, thus message is over
+  // } else if ((curReceivingState == CHECK_START || curReceivingState == MESSAGE_GET_BIT) && (doesSampleBufferHaveCountOfFreq(MESSAGE_END_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || bitPointer >= MESSAGE_LENGTH)) { // We got the end message bit OR bit buffer is full, thus message is over
+  } else if (bitPointer >= MESSAGE_LENGTH && curReceivingState != DECODE_MESSAGE) {
     transitionReceivingState(DECODE_MESSAGE);
 
   } else if (curReceivingState == CHECK_START && (millis() - lastBitChange >= MESSAGE_BIT_DELAY || doesSampleBufferHaveCountOfFreq(MESSAGE_0_FREQ, THRESHOLD_SAMPLES_MIN_DETECT) || doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_MIN_DETECT))) { // Gotten all start samples OR have we started to transition into the bit (ie our timing was misaligned)?
@@ -609,10 +610,10 @@ void loop() {
 // Transition state function
 // Handles all state-edge transitions
 void transitionReceivingState(RECEIVING_STATE newState) {
-  if (newState >= 2) {
+  // if (newState >= 2) {
     Serial.print("transitionReceivingState: ");
     Serial.println(newState);
-  }
+  // }
   if (newState == CHECK_START || newState == INTERMEDIATE_START || newState == MESSAGE_GET_BIT) {
     clearSampleBuffer();
     sampling = 1; // Begin sampling
