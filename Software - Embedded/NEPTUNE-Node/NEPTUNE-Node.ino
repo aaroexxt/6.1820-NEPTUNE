@@ -406,7 +406,9 @@ void loop() {
   if (millis() - lastBitStatisticsTime >= 1000) {
     Serial.printf("[BIT STATISTICS] Tx: %d, RxTot: %d, ErrRx: %d, GoodRx: %d, %%ErrRx:%.3f\n", bitsTransmitted, bitsReceived + errorsReceived, errorsReceived, bitsReceived, bitsReceived == 0 ? 0 : (float)errorsReceived/(float)bitsReceived*100.0);
     lastBitStatisticsTime = millis();
-
+    
+    // TODO fix this
+    bitsReceived++;
     if (curReceivingState == LISTENING) clearSampleBuffer(); // TODO note this line
   }
   
@@ -497,7 +499,6 @@ void loop() {
       bitBuffer[bitPointer] = 1; // WE GOT A 0
     }
     bitPointer++;
-    bitsReceived++;
     transitionReceivingState(INTERMEDIATE_START);
 
   } else if (curReceivingState == DECODE_MESSAGE) {

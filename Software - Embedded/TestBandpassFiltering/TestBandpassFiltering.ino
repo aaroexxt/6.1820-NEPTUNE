@@ -17,12 +17,13 @@ double getQueueAverageAmplitude(AudioRecordQueue* queue, unsigned long* sampleCo
 
 
 /************ Frequencies + Sample Settings */
-#define CENTER_FREQ 8000
+#define CENTER_FREQ 10000
 #define MESSAGE_START_FREQ CENTER_FREQ // Hz (1/sec)
-#define MESSAGE_0_FREQ CENTER_FREQ-500 // Hz
-#define MESSAGE_1_FREQ CENTER_FREQ+500 // Hz
-#define MESSAGE_END_FREQ CENTER_FREQ+1000 // Hz (1/sec)
+#define MESSAGE_0_FREQ 9000 // Hz
+#define MESSAGE_1_FREQ 11000 // Hz
+#define MESSAGE_END_FREQ 12000 // Hz (1/sec)
 #define BANDWIDTH_FREQ     150 // Hz
+#define BIT_DURATION 130
 
 #define MAX_THRESHOLDS 10
 
@@ -35,7 +36,7 @@ FreqThreshold ampThresholds[MAX_THRESHOLDS] = {
     {9000, 941.89},
     {10000, 889.67},
     {11000, 732.31},
-    {11000, 747.95}
+    {12000, 747.95}
 };
 int numThresholds = 4;
 
@@ -194,8 +195,16 @@ unsigned long counter_0 = 0;
 unsigned long counter_1 = 0;
 unsigned long counter_END = 0;
 
+unsigned long counter_THRESH_START = 0;
+unsigned long counter_THRESH_0 = 0;
+unsigned long counter_THRESH_1 = 0;
+unsigned long counter_THRESH_END = 0;
+
+unsigned long lastThreshTime = 0;
+unsigned long bitsReceived = 0;
 
 
+bool hasRunThresh = 0;
 void loop() {
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
@@ -206,15 +215,18 @@ void loop() {
       Serial.print("Output mode: ");
       Serial.println(outputThresholds ? "Thresholds" : "Raw FFT data");
     } else if (input.equalsIgnoreCase("z")) {
-      zoomMode = !zoomMode;
-      if (zoomMode) {
-        Serial.println("Zoom mode: ON (fast processing, 1Hz report)");
-        counter_START = counter_0 = counter_1 = counter_END = 0;
-        lastReportTime = millis();
-      } else {
-        Serial.println("Zoom mode: OFF (normal output resumed)");
-      }
-    } else if (input.equalsIgnoreCase("d")) {
+      // zoomMode = !zoomMode;
+      // if (zoomMode) {
+      //   Serial.println("Zoom mode: ON (fast processing, 1Hz report)");
+      //   counter_START = counter_0 = counter_1 = counter_END = 0;
+      //   lastReportTime = millis();
+      // } else {
+      //   Serial.println("Zoom mode: OFF (normal output resumed)");
+      // }
+      Serial.println("Reset bit counter");
+      bitsReceived = 0;
+    } else if (input.equalsIgnoreCase("d") || !hasRunThresh) {
+      hasRunThresh = 1;
       Serial.println("Sampling bandpass filter amplitudes for 10 seconds...");
 
       const unsigned long sampleDurationMs = 10000;
@@ -230,7 +242,7 @@ void loop() {
         total1 += sumFilterAmplitudes(branchF_1, &samples1);
         totalEnd += sumFilterAmplitudes(branchF_END, &samplesEnd);
 
-        delay(10); // match main loop delay
+        delay(2); // match main loop delay
       }
 
       // Compute average amplitudes
@@ -241,10 +253,10 @@ void loop() {
 
       // Set thresholds
       numThresholds = 4;
-      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 1.3};
-      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 1.3};
-      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 1.3};
-      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 1.3};
+      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 2};
+      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 2};
+      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 2};
+      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 2};
 
       // Sort thresholds
       for (int i = 0; i < numThresholds - 1; i++) {
@@ -313,7 +325,8 @@ void loop() {
   double f0Amp    = getQueueAverageAmplitude(branchF_0->queue,    zoomMode ? &counter_0    : nullptr);
   double f1Amp    = getQueueAverageAmplitude(branchF_1->queue,    zoomMode ? &counter_1    : nullptr);
   double endAmp   = getQueueAverageAmplitude(branchF_END->queue,  zoomMode ? &counter_END  : nullptr);
-  if (!zoomMode) delay(10);
+  // if (!zoomMode) delay(1);
+  delay(2);
 
   if (zoomMode) {
     if (millis() - lastReportTime >= 1000) {
@@ -332,26 +345,67 @@ void loop() {
     }
   } else {
 
+    if (millis() - lastThreshTime >= BIT_DURATION) {
+      // 1/3 of buffer needed to trigger bits received
+      if (counter_THRESH_START*2 >= counter_START) bitsReceived++;
+      if (counter_THRESH_0*2 >= counter_0) bitsReceived++;
+      if (counter_THRESH_1*2 >= counter_1) bitsReceived++;
+      if (counter_THRESH_END*2 >= counter_END) bitsReceived++;
 
-    // Plot results
-    if (outputThresholds) {
-      Serial.print(startAmp >= getAmplitudeThreshold(MESSAGE_START_FREQ));
-      Serial.print("\t");
-      Serial.print(f0Amp >= getAmplitudeThreshold(MESSAGE_0_FREQ));
-      Serial.print("\t");
-      Serial.print(f1Amp >= getAmplitudeThreshold(MESSAGE_1_FREQ));
-      Serial.print("\t");
-      Serial.println(endAmp >= getAmplitudeThreshold(MESSAGE_END_FREQ));
-    } else {
-      Serial.print(startAmp);
-      Serial.print("\t");
-      Serial.print(f0Amp);
-      Serial.print("\t");
-      Serial.print(f1Amp);
-      Serial.print("\t");
-      Serial.println(endAmp);
+      // Serial.print(counter_THRESH_START);
+      // Serial.print(" ");
+      // Serial.println(counter_START);
+
+      counter_THRESH_START = 0;
+      counter_START = 0;
+      counter_THRESH_0 = 0;
+      counter_0 = 0;
+      counter_THRESH_1 = 0;
+      counter_1 = 0;
+      counter_THRESH_END = 0;
+      counter_END = 0;
+      lastThreshTime = millis();
     }
+
+    if (millis() - lastReportTime >= 1000) {
+      Serial.print("[BITREPORT] Valid bits received: ");
+      Serial.println(bitsReceived);
+      lastReportTime = millis();
+    }
+
+    counter_THRESH_START += (startAmp >= getAmplitudeThreshold(MESSAGE_START_FREQ)) ? 1 : 0;
+    counter_START++;
+
+    counter_THRESH_0 += (f0Amp >= getAmplitudeThreshold(MESSAGE_0_FREQ)) ? 1 : 0;
+    counter_0++;
+
+    counter_THRESH_1 += (f1Amp >= getAmplitudeThreshold(MESSAGE_1_FREQ)) ? 1 : 0;
+    counter_1++;
+
+    counter_THRESH_END += (endAmp >= getAmplitudeThreshold(MESSAGE_END_FREQ)) ? 1 : 0;
+    counter_END++;
+
+  //   // Plot results
+  //   if (outputThresholds) {
+
+  //     Serial.print(startAmp >= getAmplitudeThreshold(MESSAGE_START_FREQ));
+  //     Serial.print("\t");
+  //     Serial.print(f0Amp >= getAmplitudeThreshold(MESSAGE_0_FREQ));
+  //     Serial.print("\t");
+  //     Serial.print(f1Amp >= getAmplitudeThreshold(MESSAGE_1_FREQ));
+  //     Serial.print("\t");
+  //     Serial.println(endAmp >= getAmplitudeThreshold(MESSAGE_END_FREQ));
+  //   } else {
+  //     Serial.print(startAmp);
+  //     Serial.print("\t");
+  //     Serial.print(f0Amp);
+  //     Serial.print("\t");
+  //     Serial.print(f1Amp);
+  //     Serial.print("\t");
+  
+  //     Serial.println(endAmp);
+  //   }
   }
 
-  delay(50); // Smooth plot
+  // delay(50); // Smooth plot
 }
