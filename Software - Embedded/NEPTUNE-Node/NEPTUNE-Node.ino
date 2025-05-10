@@ -408,8 +408,8 @@ void loop() {
     lastBitStatisticsTime = millis();
     
     // TODO fix this
-    bitsReceived++;
-    if (curReceivingState == LISTENING) clearSampleBuffer(); // TODO note this line
+    // bitsReceived++;
+    // if (curReceivingState == LISTENING) clearSampleBuffer(); // TODO note this line
   }
   
   /**************** TONE SENDING */
@@ -451,10 +451,10 @@ void loop() {
   int endSamples = countTonePresentSamples(branchF_END);
   
   if (debugMode) {
-    if (startSamples > 100) {Serial.print("S"); Serial.println(startSamples);}
-    if (F0Samples > 100) {Serial.print("0"); Serial.println(F0Samples);}
-    if (F1Samples > 100) {Serial.print("1"); Serial.println(F1Samples);}
-    if (endSamples > 100) {Serial.print("E"); Serial.println(endSamples);}
+    if (startSamples > 100) {Serial.print("S-"); Serial.println(startSamples);}
+    if (F0Samples > 100) {Serial.print("0-"); Serial.println(F0Samples);}
+    if (F1Samples > 100) {Serial.print("1-"); Serial.println(F1Samples);}
+    if (endSamples > 100) {Serial.print("E-"); Serial.println(endSamples);}
   }
 
   while(millis() - lastLoopTime < 10) {} // Accumulate 10ms of samples between iters
@@ -495,37 +495,54 @@ void loop() {
     
     if (doesSampleBufferHaveCountOfFreq(MESSAGE_1_FREQ, THRESHOLD_SAMPLES_VALID)) {
       bitBuffer[bitPointer] = 1; // WE GOT A 1
+      Serial.println("GOT 1");
     } else {
-      bitBuffer[bitPointer] = 1; // WE GOT A 0
+      bitBuffer[bitPointer] = 0; // WE GOT A 0
+      Serial.println("GOT 0");
     }
     bitPointer++;
     transitionReceivingState(INTERMEDIATE_START);
 
   } else if (curReceivingState == DECODE_MESSAGE) {
     // Message decoding here
-    uint16_t encoded = 0;
-    // Combine bits in bitBuffer into a single byte
-    for (int i = MESSAGE_LENGTH - 1; i >= 0; i--) {
-      encoded = (encoded << 1) | bitBuffer[i];
+    uint16_t rawData = 0;
+
+    // Print received bits
+    Serial.print("[RX] GOT RAW: ");
+    for (int i = 0; i < MESSAGE_LENGTH; i++) {
+      Serial.print(bitBuffer[i]);
+    }
+    Serial.println();
+
+    // Reconstruct rawData: ID goes in bits 9–8, MSG in 7–0
+    rawData |= (bitBuffer[0] & 1) << 8;  // ID bit 0 → bit 8
+    rawData |= (bitBuffer[1] & 1) << 9;  // ID bit 1 → bit 9
+    for (int i = 0; i < 8; i++) {
+      rawData |= (bitBuffer[i + 2] & 1) << i;  // MSG bits 0–7 → bits 0–7
     }
 
-    int errorPos = 0;
     bool doubleError = false;
-    UnderwaterMessage decoded = UnderwaterMessage::decodeHamming(encoded, &errorPos, &doubleError);
     UnderwaterMessage response(NODE_ID, 0);
+    UnderwaterMessage decoded = UnderwaterMessage::fromData(rawData);
+    // Serial.println();
 
-    if (doubleError) {
-        Serial.println("[RECV] Double-bit uncorrectable error in received result");
-        errorsReceived+=2;
-        response.msg = 255; // Double bit error - put 255 in message field
-        transmitMessageAsync(response); // Send error response back to transmitter TODO maybe comment out
-    } else if (errorPos > 0) {
-        Serial.print("[RECV] Corrected single-bit error at position: ");
-        Serial.println(errorPos);
-        errorsReceived++;
-    } else {
-        Serial.println("[RECV] No error detected.");
-    }
+    // int errorPos = 0;
+    // bool doubleError = false;
+    // UnderwaterMessage decoded = UnderwaterMessage::decodeHamming(encoded, &errorPos, &doubleError);
+    // UnderwaterMessage response(NODE_ID, 0);
+
+    // if (doubleError) {
+    //     Serial.println("[RECV] Double-bit uncorrectable error in received result");
+    //     errorsReceived+=2;
+    //     response.msg = 255; // Double bit error - put 255 in message field
+    //     transmitMessageAsync(response); // Send error response back to transmitter TODO maybe comment out
+    // } else if (errorPos > 0) {
+    //     Serial.print("[RECV] Corrected single-bit error at position: ");
+    //     Serial.println(errorPos);
+    //     errorsReceived++;
+    // } else {
+    //     Serial.println("[RECV] No error detected.");
+    // }
 
     // Bit of an edge case: the double error could have been in the ID field. But if that's true, the message is simply invalid. For now we will send back a 255 error
     if (!doubleError) {
@@ -612,8 +629,8 @@ void loop() {
 // Handles all state-edge transitions
 void transitionReceivingState(RECEIVING_STATE newState) {
   // if (newState >= 2) {
-    Serial.print("transitionReceivingState: ");
-    Serial.println(newState);
+    // Serial.print("transitionReceivingState: ");
+    // Serial.println(newState);
   // }
   if (newState == CHECK_START || newState == INTERMEDIATE_START || newState == MESSAGE_GET_BIT) {
     clearSampleBuffer();
@@ -643,7 +660,7 @@ void measureFrequencyBinThresholds(unsigned long sampleDurationMs, float thresho
     total1 += sumFilterAmplitudes(branchF_1, &samples1);
     totalEnd += sumFilterAmplitudes(branchF_END, &samplesEnd);
 
-    delay(10); // match main loop delay
+    // delay(5); // match main loop delay
   }
 
   // Compute average amplitudes

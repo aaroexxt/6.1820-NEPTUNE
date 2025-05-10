@@ -242,7 +242,8 @@ void loop() {
         total1 += sumFilterAmplitudes(branchF_1, &samples1);
         totalEnd += sumFilterAmplitudes(branchF_END, &samplesEnd);
 
-        delay(2); // match main loop delay
+        // delayMicroseconds(500); // match main loop delay
+        delay(5);
       }
 
       // Compute average amplitudes
@@ -253,10 +254,10 @@ void loop() {
 
       // Set thresholds
       numThresholds = 4;
-      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 2};
-      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 2};
-      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 2};
-      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 2};
+      ampThresholds[0] = {MESSAGE_0_FREQ,     avg0  * 3.0};
+      ampThresholds[1] = {MESSAGE_START_FREQ, avgStart * 3.0};
+      ampThresholds[2] = {MESSAGE_1_FREQ,     avg1  * 3.0};
+      ampThresholds[3] = {MESSAGE_END_FREQ,   avgEnd  * 3.0};
 
       // Sort thresholds
       for (int i = 0; i < numThresholds - 1; i++) {
@@ -326,7 +327,10 @@ void loop() {
   double f1Amp    = getQueueAverageAmplitude(branchF_1->queue,    zoomMode ? &counter_1    : nullptr);
   double endAmp   = getQueueAverageAmplitude(branchF_END->queue,  zoomMode ? &counter_END  : nullptr);
   // if (!zoomMode) delay(1);
-  delay(2);
+  // delay(2);
+  // delayMicroseconds(500);
+  delay(5);
+
 
   if (zoomMode) {
     if (millis() - lastReportTime >= 1000) {

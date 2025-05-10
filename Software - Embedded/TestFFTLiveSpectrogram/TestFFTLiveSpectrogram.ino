@@ -42,6 +42,11 @@ SamplingBuffer is a time-valued array that records bin number
 #define MAX_VALID_AMP 1.5
 #define MESSAGE_LOWPASS_CUTOFF_FREQ 4500
 #define FFT_BIN_CUTOFF (int)(MESSAGE_LOWPASS_CUTOFF_FREQ/FFT_BIN_WIDTH) //Lowpass 
+#define BIT_DELAY 500
+unsigned long lastBitDelay = 0;
+int bitsReceived = 0;
+unsigned long lastPrintTime = 0;
+float lastPeakFreq = 0;
 
 void setup() {
     Serial.begin(115200);
@@ -68,6 +73,10 @@ void setup() {
     Serial.println("Amplitude (0-1):\tFrequency (1=100kHz):");
 }
 
+
+unsigned int totalSampleCount = 0;
+unsigned int validSampleCount = 0;
+
 void loop() {
     static bool printResults = true;
 
@@ -77,33 +86,61 @@ void loop() {
         char c = Serial.read();
         if (c == 's' || c == 'S') {
             printResults = !printResults;
+        } else if (c == 'z' || c == 'Z') {
+          bitsReceived = 0;
         }
     }
 
-    if (inputFFT.available() && printResults) {
-        float maxBinAmp = 0;
-        int binNumber = 0;
-        for (int i = 0; i < 1024; i++) {
-            float n = inputFFT.read(i);
-            if (n > maxBinAmp && i >= FFT_BIN_CUTOFF) {
-                maxBinAmp = n;
-                binNumber = i;
-            }
+    if (inputFFT.available()) {
+      float maxBinAmp = 0;
+      int binNumber = 0;
+      for (int i = 0; i < 1024; i++) {
+          float n = inputFFT.read(i);
+          if (n > maxBinAmp && i >= FFT_BIN_CUTOFF) {
+              maxBinAmp = n;
+              binNumber = i;
+          }
+      }
+
+      // if (maxBinAmp >= MIN_VALID_AMP && maxBinAmp <= MAX_VALID_AMP) {
+      float peakFreq = binNumber * FFT_BIN_WIDTH;
+      float scaledFreq = peakFreq / 20000.0; // Scale frequency to 0-1 range, 100kHz -> 1. So 20kHz = 0.2
+
+      // Print for Serial Plotter: tab-separated
+      // Serial.print(maxBinAmp*5);
+      // Serial.print("\t");
+      // Serial.println(scaledFreq);
+      
+      // human-readable output
+      totalSampleCount++;
+      if (maxBinAmp > 0.075) {
+        bool isZero = abs(peakFreq - 9000) <= 250;
+        bool isOne = abs(peakFreq - 10000) <= 250;
+        bool isStart = abs(peakFreq - 11000) <= 250;
+        bool isEnd = abs(peakFreq - 12000) <= 250;
+        if (isZero || isOne || isStart || isEnd && peakFreq != lastPeakFreq) {
+          validSampleCount++;
+          lastPeakFreq = peakFreq;
         }
-
-        // if (maxBinAmp >= MIN_VALID_AMP && maxBinAmp <= MAX_VALID_AMP) {
-            float peakFreq = binNumber * FFT_BIN_WIDTH;
-            float scaledFreq = peakFreq / 20000.0; // Scale frequency to 0-1 range, 100kHz -> 1. So 20kHz = 0.2
-
-            // Print for Serial Plotter: tab-separated
-            // Serial.print(maxBinAmp*5);
-            // Serial.print("\t");
-            // Serial.println(scaledFreq);
-            
-            // human-readable output
-            Serial.print(maxBinAmp); Serial.print(" @ "); Serial.print(peakFreq); Serial.println("Hz");
-        // }
+      }
+      
+      if (printResults) {
+        Serial.print(maxBinAmp); Serial.print(" @ "); Serial.print(peakFreq); Serial.println("Hz");
+      }
     }
+
+    if (millis() - lastBitDelay >= BIT_DELAY) {
+      if (validSampleCount*2 >= totalSampleCount) bitsReceived++;
+      validSampleCount = 0;
+      totalSampleCount = 0;
+      lastBitDelay = millis();
+    }
+
+    // if (millis() - lastPrintTime > 1000) {
+    //   Serial.print("Bits received: ");
+    //   Serial.println(bitsReceived);
+    //   lastPrintTime = millis();
+    // }
 }
 
 /**************** Support SGTL sampling frequency changing */
